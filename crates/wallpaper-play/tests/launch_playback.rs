@@ -1,8 +1,11 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use wallpaper_import::scan_library;
 use wallpaper_play::{launch, LaunchError, PlayError, PlayPlan, Players};
@@ -49,11 +52,33 @@ fn write_argv_stub(dir: &Path, record: &Path) -> PathBuf {
     );
     let stub = dir.join("argv-stub");
     let script = format!("#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\" > '{record}'\n");
-    fs::write(&stub, script).expect("write stub");
-    let mut permissions = fs::metadata(&stub).expect("stub metadata").permissions();
+    let mut file = File::create(&stub).expect("create stub");
+    file.write_all(script.as_bytes()).expect("write stub");
+    file.sync_all().expect("sync stub");
+    let mut permissions = file.metadata().expect("stub metadata").permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&stub, permissions).expect("chmod stub");
+    file.set_permissions(permissions).expect("chmod stub");
+    drop(file);
     stub
+}
+
+/// Spawn the stub. A just-written script can return ETXTBSY once; retry that.
+fn spawn_player(plan: &PlayPlan, players: &Players) -> Child {
+    let mut busy = None;
+    for _ in 0..50 {
+        match launch(plan, players) {
+            Ok(child) => return child,
+            Err(LaunchError::Spawn { program, source })
+                if source.kind() == ErrorKind::ExecutableFileBusy =>
+            {
+                busy = Some((program, source));
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("spawn player: {error}"),
+        }
+    }
+    let (program, source) = busy.expect("busy spawn");
+    panic!("player stayed busy: {}: {source}", program.display());
 }
 
 fn read_argv(record: &Path) -> Vec<String> {
@@ -97,7 +122,7 @@ fn launching_a_video_plan_records_the_file_and_an_infinite_loop() {
 
     let record = root.join("argv");
     let stub = write_argv_stub(&root, &record);
-    let mut child = launch(&plan, &players_using(stub.clone())).expect("spawn video player");
+    let mut child = spawn_player(&plan, &players_using(stub.clone()));
     let status = child.wait().expect("wait for video player");
     assert!(status.success());
 
@@ -132,7 +157,7 @@ fn launching_a_web_plan_records_the_file_url() {
 
     let record = root.join("argv");
     let stub = write_argv_stub(&root, &record);
-    let mut child = launch(&plan, &players_using(stub.clone())).expect("spawn web player");
+    let mut child = spawn_player(&plan, &players_using(stub.clone()));
     let status = child.wait().expect("wait for web player");
     assert!(status.success());
 
