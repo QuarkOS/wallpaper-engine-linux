@@ -100,6 +100,7 @@ fn parse_play_args(args: impl IntoIterator<Item = String>) -> Result<PlayArgs, C
     Ok(parsed)
 }
 
+#[derive(Debug)]
 enum CliError {
     Usage(String),
     MissingHome,
