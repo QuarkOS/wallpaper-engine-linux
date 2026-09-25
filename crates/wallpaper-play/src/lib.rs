@@ -8,6 +8,12 @@
 //! media file is missing, are errors from [`plan_playback`]. [`play_first`]
 //! scans a library, skips unsupported entries, and [`launch`]es the first
 //! video or web wallpaper. This crate does not render wallpapers.
+//!
+//! The `wallpaper` command calls [`play_first`] on a workshop library.
+//! `wallpaper play --steam-root DIR` uses that Steam root. Without
+//! `--steam-root`, [`steam_root::find_steam_root`] checks `~/.steam/steam`,
+//! `~/.local/share/Steam`, and `~/.steam/root` under `HOME`, in that order,
+//! and uses the first root whose workshop directory exists.
 
 use std::fmt;
 use std::io;
@@ -15,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
 use wallpaper_import::{resolve_media, scan_library, ImportError, LibraryEntry, Wallpaper};
+
+pub mod steam_root;
 
 /// What a desktop player should run for one library entry.
 ///
