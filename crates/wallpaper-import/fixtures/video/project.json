@@ -1,0 +1,10 @@
+{
+  "contentrating": "Everyone",
+  "description": "Synthetic fixture. Not a workshop wallpaper.",
+  "file": "wallpaper.mp4",
+  "preview": "preview.png",
+  "tags": ["synthetic"],
+  "title": "Synthetic Video",
+  "type": "video",
+  "visibility": "private"
+}

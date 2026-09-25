@@ -1,0 +1,10 @@
+{
+  "contentrating": "Everyone",
+  "description": "Synthetic fixture. Not a workshop wallpaper.",
+  "file": "scene.json",
+  "preview": "preview.png",
+  "tags": ["synthetic"],
+  "title": "Synthetic Scene",
+  "type": "scene",
+  "visibility": "private"
+}

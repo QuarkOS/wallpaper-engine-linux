@@ -1,0 +1,10 @@
+{
+  "contentrating": "Everyone",
+  "description": "Synthetic fixture. Not a workshop wallpaper.",
+  "file": "index.html",
+  "preview": "preview.png",
+  "tags": ["synthetic"],
+  "title": "Synthetic Web",
+  "type": "web",
+  "visibility": "private"
+}
