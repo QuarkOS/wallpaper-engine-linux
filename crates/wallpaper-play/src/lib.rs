@@ -1,15 +1,17 @@
-//! Turn a resolved video or web wallpaper into a play plan.
+//! Turn a resolved video or web wallpaper into a play plan and start it.
 //!
 //! A desktop player scans a library with [`wallpaper_import::scan_library`],
-//! then calls [`plan_playback`] on each entry. Video plans name the resolved
-//! file and loop it. Web plans are a `file://` URL to the resolved HTML file.
-//! Scene, application, and other unsupported types, and video or web projects
-//! whose media file is missing, are errors. This crate does not render
-//! wallpapers.
+//! then calls [`plan_playback`] on each entry. [`launch`] starts that plan as
+//! a process. A video plan runs `mpv` with an infinite loop of the resolved
+//! file. A web plan runs `xdg-open` with the `file://` URL. Scene,
+//! application, and other unsupported types, and video or web projects whose
+//! media file is missing, are errors from [`plan_playback`]. This crate does
+//! not render wallpapers.
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
 
 use wallpaper_import::{resolve_media, ImportError, LibraryEntry, Wallpaper};
 
@@ -146,4 +148,104 @@ fn is_file_url_byte(byte: u8) -> bool {
         byte,
         b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'.' | b'_' | b'~'
     )
+}
+
+/// `mpv` flag that repeats the current file forever.
+///
+/// `--loop-file=inf` loops that file. It does not restart a playlist.
+const MPV_INFINITE_FILE_LOOP: &str = "--loop-file=inf";
+
+/// Executables [`launch`] uses for each [`PlayPlan`] variant.
+///
+/// The defaults are `mpv` for video and `xdg-open` for web. Tests and callers
+/// that want a different program replace these paths. Arguments stay the same:
+/// an infinite file loop plus the media path, or the file URL alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Players {
+    /// Video player. Default: `mpv`.
+    pub video: PathBuf,
+    /// Program that opens a web wallpaper. Default: `xdg-open`.
+    pub web: PathBuf,
+}
+
+impl Default for Players {
+    fn default() -> Self {
+        Self {
+            video: PathBuf::from("mpv"),
+            web: PathBuf::from("xdg-open"),
+        }
+    }
+}
+
+/// Failure while starting the process for a [`PlayPlan`].
+#[derive(Debug)]
+pub enum LaunchError {
+    /// `program` was not found.
+    MissingPlayer { program: PathBuf, source: io::Error },
+    /// Spawning `program` failed for a reason other than a missing executable.
+    Spawn { program: PathBuf, source: io::Error },
+}
+
+impl fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LaunchError::MissingPlayer { program, source } => {
+                write!(
+                    f,
+                    "player executable not found: {}: {source}",
+                    program.display()
+                )
+            }
+            LaunchError::Spawn { program, source } => {
+                write!(f, "failed to start {}: {source}", program.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LaunchError::MissingPlayer { source, .. } | LaunchError::Spawn { source, .. } => {
+                Some(source)
+            }
+        }
+    }
+}
+
+/// Start `plan` as a child process.
+///
+/// A video plan spawns `players.video`. When `loops` is set, the arguments are
+/// `--loop-file=inf` and then the resolved media path, which is `mpv`'s
+/// infinite loop of that file. When `loops` is clear, the only argument is the
+/// media path. A web plan spawns `players.web` with the file URL as its only
+/// argument.
+///
+/// The returned [`Child`] is still running. A missing executable is
+/// [`LaunchError::MissingPlayer`].
+pub fn launch(plan: &PlayPlan, players: &Players) -> Result<Child, LaunchError> {
+    let program = match plan {
+        PlayPlan::Video { .. } => &players.video,
+        PlayPlan::Web { .. } => &players.web,
+    };
+    let mut command = Command::new(program);
+    match plan {
+        PlayPlan::Video { file, loops } => {
+            if *loops {
+                command.arg(MPV_INFINITE_FILE_LOOP);
+            }
+            command.arg(file);
+        }
+        PlayPlan::Web { url } => {
+            command.arg(url);
+        }
+    }
+    command.spawn().map_err(|source| {
+        let program = program.to_path_buf();
+        if source.kind() == io::ErrorKind::NotFound {
+            LaunchError::MissingPlayer { program, source }
+        } else {
+            LaunchError::Spawn { program, source }
+        }
+    })
 }
