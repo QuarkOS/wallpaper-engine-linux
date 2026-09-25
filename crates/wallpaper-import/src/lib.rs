@@ -7,12 +7,14 @@
 //!
 //! [`load_wallpaper`] reads one project directory. [`scan_library`] walks the
 //! immediate children of a library root, such as a Steam workshop folder, and
-//! returns each project that loads.
+//! returns each project that loads. [`resolve_media`] joins a video or web
+//! entry's project directory with its relative `file` and returns that path
+//! when the file is on disk inside the project.
 
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -53,6 +55,12 @@ pub enum ImportError {
     },
     /// A video or web project is missing `file` or `title`, or `type` is absent.
     MissingField { field: &'static str },
+    /// Scene, application, and other non-playable types have no media file.
+    UnsupportedMedia { kind: String },
+    /// The project-relative media file is not a file on disk.
+    MissingMedia { path: PathBuf },
+    /// `file` is absolute or climbs out of the project directory.
+    PathEscapes { directory: PathBuf, file: String },
 }
 
 impl fmt::Display for ImportError {
@@ -76,6 +84,19 @@ impl fmt::Display for ImportError {
             }
             ImportError::MissingField { field } => {
                 write!(f, "project.json is missing required field `{field}`")
+            }
+            ImportError::UnsupportedMedia { kind } => {
+                write!(f, "wallpaper type `{kind}` has no media file")
+            }
+            ImportError::MissingMedia { path } => {
+                write!(f, "media file not found: {}", path.display())
+            }
+            ImportError::PathEscapes { directory, file } => {
+                write!(
+                    f,
+                    "media path `{file}` escapes project directory {}",
+                    directory.display()
+                )
             }
         }
     }
@@ -188,4 +209,102 @@ fn required_text(value: Option<String>, field: &'static str) -> Result<String, I
         Some(value) if !value.trim().is_empty() => Ok(value.trim().to_string()),
         _ => Err(ImportError::MissingField { field }),
     }
+}
+
+/// Resolve the on-disk media file for a video or web [`LibraryEntry`].
+///
+/// The returned path is `entry.directory` joined with the project-relative
+/// `file`. The file must exist. Unsupported wallpapers have no `file`, so this
+/// returns [`ImportError::UnsupportedMedia`] without building a path. An
+/// absolute `file`, a `file` that climbs out of the project directory with
+/// `..`, or a symlink whose target leaves the project directory returns
+/// [`ImportError::PathEscapes`].
+pub fn resolve_media(entry: &LibraryEntry) -> Result<PathBuf, ImportError> {
+    let file = match &entry.wallpaper {
+        Wallpaper::Video { file, .. } | Wallpaper::Web { file, .. } => file,
+        Wallpaper::Unsupported { kind } => {
+            return Err(ImportError::UnsupportedMedia { kind: kind.clone() });
+        }
+    };
+
+    if !relative_file_stays_inside(Path::new(file)) {
+        return Err(ImportError::PathEscapes {
+            directory: entry.directory.clone(),
+            file: file.clone(),
+        });
+    }
+
+    let path = entry.directory.join(file);
+    if !path.is_file() {
+        return Err(ImportError::MissingMedia { path });
+    }
+
+    if !canonical_file_stays_inside(&entry.directory, &path)? {
+        return Err(ImportError::PathEscapes {
+            directory: entry.directory.clone(),
+            file: file.clone(),
+        });
+    }
+
+    Ok(path)
+}
+
+/// `file` is a relative path that never climbs above the project directory.
+///
+/// Absolute paths are rejected because [`Path::join`] would discard the
+/// project directory. A trailing climb such as `clips/../wallpaper.mp4` is
+/// allowed when an earlier normal component keeps the result inside.
+fn relative_file_stays_inside(file: &Path) -> bool {
+    if file.is_absolute() {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    for component in file.components() {
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+
+    true
+}
+
+/// The opened file's canonical path is still inside the canonical project directory.
+///
+/// Lexical checks miss a symlink that points outside the project.
+fn canonical_file_stays_inside(directory: &Path, file: &Path) -> Result<bool, ImportError> {
+    let directory = directory.canonicalize().map_err(|source| ImportError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    let canonical = match file.canonicalize() {
+        Ok(path) => path,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(ImportError::MissingMedia {
+                path: file.to_path_buf(),
+            });
+        }
+        Err(source) => {
+            return Err(ImportError::Io {
+                path: file.to_path_buf(),
+                source,
+            });
+        }
+    };
+
+    if canonical == directory {
+        return Err(ImportError::MissingMedia {
+            path: file.to_path_buf(),
+        });
+    }
+
+    Ok(canonical.starts_with(&directory))
 }

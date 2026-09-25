@@ -2,7 +2,7 @@
 name = "wallpaper-import"
 version = "0.1.0"
 edition = "2021"
-description = "Read Wallpaper Engine project directories and scan a library root."
+description = "Read Wallpaper Engine project directories, scan a library root, and resolve media paths."
 license = "MIT"
 publish = false
 
