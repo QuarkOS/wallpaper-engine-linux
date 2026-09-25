@@ -1,9 +1,13 @@
-//! Read a Wallpaper Engine project directory the user already owns.
+//! Read Wallpaper Engine project directories the user already owns.
 //!
 //! Wallpaper Engine describes each project with a `project.json` file. The
 //! public fields this crate uses are `type`, `file`, and `title`. Video and
 //! web projects become playable variants. Scene, application, and any other
 //! type become [`Wallpaper::Unsupported`].
+//!
+//! [`load_wallpaper`] reads one project directory. [`scan_library`] walks the
+//! immediate children of a library root, such as a Steam workshop folder, and
+//! returns each project that loads.
 
 use std::fmt;
 use std::fs;
@@ -22,6 +26,15 @@ pub enum Wallpaper {
     Video { file: String, title: String },
     Web { file: String, title: String },
     Unsupported { kind: String },
+}
+
+/// A project directory found under a library root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryEntry {
+    /// Directory that contains this project's `project.json`.
+    pub directory: PathBuf,
+    /// Wallpaper loaded from that directory.
+    pub wallpaper: Wallpaper,
 }
 
 /// Failure while reading a project directory.
@@ -110,6 +123,49 @@ pub fn load_wallpaper(dir: impl AsRef<Path>) -> Result<Wallpaper, ImportError> {
         serde_json::from_str(&text).map_err(|source| ImportError::Json { path, source })?;
 
     classify(project)
+}
+
+/// Scan the immediate children of a library root.
+///
+/// A Steam workshop folder is a parent of many project directories. Each child
+/// directory that [`load_wallpaper`] accepts becomes a [`LibraryEntry`].
+/// Children that are not directories, and children that fail to load (no
+/// `project.json`, invalid JSON, or a missing required field), are skipped so
+/// one junk child does not fail the scan. Entries are sorted by directory path.
+///
+/// `root` must be a directory. An empty directory returns an empty list.
+pub fn scan_library(root: impl AsRef<Path>) -> Result<Vec<LibraryEntry>, ImportError> {
+    let root = root.as_ref();
+    if !root.is_dir() {
+        return Err(ImportError::NotADirectory(root.to_path_buf()));
+    }
+
+    let mut entries = Vec::new();
+    let children = fs::read_dir(root).map_err(|source| ImportError::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+
+    for child in children {
+        let child = child.map_err(|source| ImportError::Io {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        let path = child.path();
+        if !path.is_dir() {
+            continue;
+        }
+        match load_wallpaper(&path) {
+            Ok(wallpaper) => entries.push(LibraryEntry {
+                directory: path,
+                wallpaper,
+            }),
+            Err(_) => continue,
+        }
+    }
+
+    entries.sort_by(|left, right| left.directory.cmp(&right.directory));
+    Ok(entries)
 }
 
 fn classify(project: ProjectFile) -> Result<Wallpaper, ImportError> {

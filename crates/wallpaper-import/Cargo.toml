@@ -2,7 +2,7 @@
 name = "wallpaper-import"
 version = "0.1.0"
 edition = "2021"
-description = "Read a Wallpaper Engine project directory into a typed wallpaper."
+description = "Read Wallpaper Engine project directories and scan a library root."
 license = "MIT"
 publish = false
 
