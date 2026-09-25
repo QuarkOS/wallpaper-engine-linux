@@ -10,10 +10,13 @@
 //! video or web wallpaper. This crate does not render wallpapers.
 //!
 //! The `wallpaper` command calls [`play_first`] on a workshop library.
-//! `wallpaper play --steam-root DIR` uses that Steam root. Without
+//! `wallpaper play --steam-root DIR` uses that Steam root, then any extra
+//! library named in its `steamapps/libraryfolders.vdf`. Without
 //! `--steam-root`, [`steam_root::find_steam_root`] checks `~/.steam/steam`,
-//! `~/.local/share/Steam`, and `~/.steam/root` under `HOME`, in that order,
-//! and uses the first root whose workshop directory exists.
+//! `~/.local/share/Steam`, and `~/.steam/root` under `HOME`, in that order.
+//! Each root is used when its workshop directory exists. Otherwise libraries
+//! named in that root's `libraryfolders.vdf` are checked, and the first match
+//! is used.
 
 use std::fmt;
 use std::io;

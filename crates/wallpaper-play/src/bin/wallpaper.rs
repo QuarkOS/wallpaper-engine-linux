@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{ExitCode, ExitStatus};
 
 use wallpaper_import::{workshop_dir, ImportError};
-use wallpaper_play::steam_root::{find_steam_root, SteamRootError};
+use wallpaper_play::steam_root::{find_steam_root, find_workshop_root, SteamRootError};
 use wallpaper_play::{play_first, PlayFirstError, Players};
 
 const USAGE: &str = "\
@@ -15,8 +15,11 @@ Usage: wallpaper play [--steam-root DIR] [--video-player PATH] [--web-player PAT
 
 Play the first video or web wallpaper in a Steam workshop library.
 Without --steam-root, search ~/.steam/steam, ~/.local/share/Steam, and
-~/.steam/root under HOME, and use the first root that contains
-steamapps/workshop/content/431960.
+~/.steam/root under HOME. Each root is checked for
+steamapps/workshop/content/431960, then for libraries named in
+steamapps/libraryfolders.vdf. The first match is used.
+--steam-root DIR uses that root and its libraryfolders.vdf, and does not
+search HOME.
 --video-player defaults to mpv. --web-player defaults to xdg-open.";
 
 fn main() -> ExitCode {
@@ -38,7 +41,7 @@ struct PlayArgs {
 fn play_from_args(args: impl IntoIterator<Item = String>) -> Result<(), CliError> {
     let args = parse_play_args(args)?;
     let steam_root = match args.steam_root {
-        Some(root) => root,
+        Some(root) => find_workshop_root(&root).unwrap_or(root),
         None => {
             let home = env::var_os("HOME").ok_or(CliError::MissingHome)?;
             find_steam_root(home)?

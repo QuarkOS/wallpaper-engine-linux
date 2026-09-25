@@ -40,6 +40,19 @@ fn write_file(path: &Path, body: &str) {
     fs::write(path, body).expect("write file");
 }
 
+/// `libraryfolders.vdf` whose quoted `path` entries are `libraries`, in order.
+fn write_library_folders(steam_root: &Path, libraries: &[&Path]) {
+    let mut body = String::from("\"libraryfolders\"\n{\n");
+    for (index, library) in libraries.iter().enumerate() {
+        body.push_str(&format!(
+            "\t\"{index}\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t\t\"label\"\t\t\"\"\n\t\t\"apps\"\n\t\t{{\n\t\t\t\"431960\"\t\t\"0\"\n\t\t}}\n\t}}\n",
+            library.display()
+        ));
+    }
+    body.push_str("}\n");
+    write_file(&steam_root.join("steamapps/libraryfolders.vdf"), &body);
+}
+
 fn write_scene(library: &Path, id: &str) {
     write_project(
         &library.join(id),
@@ -375,5 +388,246 @@ fn steam_root_without_a_workshop_does_not_fall_back_to_home() {
     );
 
     assert_failed_without_player(&output, &[stubs.video_record, stubs.web_record]);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn second_library_in_vdf_is_played_when_the_root_has_no_workshop() {
+    let home = scratch_dir();
+    let steam_root = home.join(".steam/steam");
+    fs::create_dir_all(steam_root.join("steamapps")).expect("steamapps");
+    let second = home.join("second library");
+    let library = workshop_path(&second);
+    write_scene(&library, "1001");
+    let media = write_video(&library, "1002", "wallpaper.mp4");
+    write_library_folders(&steam_root, &[&steam_root, &second]);
+
+    let decoy = workshop_path(&home.join(".local/share/Steam"));
+    write_video(&decoy, "1001", "decoy.mp4");
+
+    let stubs = stubs_in(&home);
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &home,
+        &[
+            "play",
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(!stubs.web_record.exists(), "web player was spawned");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn root_workshop_is_used_before_a_library_named_in_vdf() {
+    let home = scratch_dir();
+    let steam_root = home.join(".steam/steam");
+    let library = workshop_path(&steam_root);
+    let media = write_video(&library, "1001", "from-root.mp4");
+    let second = home.join("second library");
+    write_video(&workshop_path(&second), "1001", "from-library.mp4");
+    write_library_folders(&steam_root, &[&steam_root, &second]);
+
+    let stubs = stubs_in(&home);
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &home,
+        &[
+            "play",
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(!stubs.web_record.exists(), "web player was spawned");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn missing_library_path_is_skipped() {
+    let home = scratch_dir();
+    let steam_root = home.join(".steam/steam");
+    fs::create_dir_all(steam_root.join("steamapps")).expect("steamapps");
+    let missing = home.join("missing-library");
+    let second = home.join("present-library");
+    let media = write_video(&workshop_path(&second), "1001", "wallpaper.mp4");
+    write_library_folders(&steam_root, &[&missing, &second]);
+
+    let decoy = workshop_path(&home.join(".local/share/Steam"));
+    write_video(&decoy, "1001", "decoy.mp4");
+
+    let stubs = stubs_in(&home);
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &home,
+        &[
+            "play",
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(!stubs.web_record.exists(), "web player was spawned");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn missing_vdf_still_plays_the_root_workshop() {
+    let home = scratch_dir();
+    let steam_root = home.join(".steam/steam");
+    let media = write_video(&workshop_path(&steam_root), "1001", "from-root.mp4");
+    assert!(
+        !steam_root.join("steamapps/libraryfolders.vdf").exists(),
+        "this test needs a missing libraryfolders.vdf"
+    );
+
+    let stubs = stubs_in(&home);
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &home,
+        &[
+            "play",
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(!stubs.web_record.exists(), "web player was spawned");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn unreadable_vdf_still_plays_the_root_workshop() {
+    let home = scratch_dir();
+    let steam_root = home.join(".steam/steam");
+    let media = write_video(&workshop_path(&steam_root), "1001", "from-root.mp4");
+    let decoy = home.join("decoy-library");
+    write_video(&workshop_path(&decoy), "1001", "from-decoy.mp4");
+    write_library_folders(&steam_root, &[&decoy]);
+    let vdf = steam_root.join("steamapps/libraryfolders.vdf");
+    let mut permissions = fs::metadata(&vdf).expect("vdf metadata").permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&vdf, permissions).expect("chmod vdf");
+
+    let stubs = stubs_in(&home);
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &home,
+        &[
+            "play",
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(!stubs.web_record.exists(), "web player was spawned");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn steam_root_flag_plays_a_library_named_in_vdf() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    fs::create_dir_all(steam_root.join("steamapps")).expect("steamapps");
+    let second = scratch.join("second library");
+    let media = write_video(&workshop_path(&second), "1001", "from-library.mp4");
+    write_library_folders(&steam_root, &[&steam_root, &second]);
+
+    let home = scratch.join("home");
+    write_video(
+        &workshop_path(&home.join(".steam/steam")),
+        "1001",
+        "from-home.mp4",
+    );
+
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &home,
+        &[
+            "play",
+            "--steam-root",
+            &steam_root,
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(!stubs.web_record.exists(), "web player was spawned");
     let _ = fs::remove_dir_all(&scratch);
 }
