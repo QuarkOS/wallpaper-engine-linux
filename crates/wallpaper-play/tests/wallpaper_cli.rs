@@ -631,3 +631,191 @@ fn steam_root_flag_plays_a_library_named_in_vdf() {
     assert!(!stubs.web_record.exists(), "web player was spawned");
     let _ = fs::remove_dir_all(&scratch);
 }
+
+#[test]
+fn list_prints_each_project_sorted_by_id() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let library = workshop_path(&steam_root);
+    write_project(
+        &library.join("1002"),
+        r#"{"type":"web","file":"index.html","title":"Clock Page"}"#,
+    );
+    write_file(
+        &library.join("1002/index.html"),
+        "<!doctype html><title>Clock Page</title>",
+    );
+    write_project(
+        &library.join("1001"),
+        r#"{"type":"scene","file":"scene.json","title":"Night Window"}"#,
+    );
+    write_project(
+        &library.join("1003"),
+        r#"{"type":"video","file":"rain.mp4","title":"Rain Loop"}"#,
+    );
+    write_file(&library.join("1003/rain.mp4"), "synthetic video bytes");
+
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let output = wallpaper(&scratch, &["list", "--steam-root", &steam_root]);
+    assert_success(&output);
+
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    assert_eq!(
+        stdout,
+        "\
+1001 scene Night Window
+1002 web Clock Page
+1003 video Rain Loop
+"
+    );
+    assert!(
+        !stubs.video_record.exists(),
+        "list spawned the video player"
+    );
+    assert!(!stubs.web_record.exists(), "list spawned the web player");
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn play_id_launches_that_video() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let library = workshop_path(&steam_root);
+    write_scene(&library, "1001");
+    write_video(&library, "1002", "first.mp4");
+    let media = write_video(&library, "1003", "chosen.mp4");
+
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &scratch,
+        &[
+            "play",
+            "1003",
+            "--steam-root",
+            &steam_root,
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.video_record),
+        vec![
+            stubs.video.display().to_string(),
+            "--loop-file=inf".to_string(),
+            media.display().to_string(),
+        ]
+    );
+    assert!(
+        !stubs.web_record.exists(),
+        "web player was spawned for a video wallpaper"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn play_id_launches_that_web() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let library = workshop_path(&steam_root);
+    write_video(&library, "1001", "earlier.mp4");
+    let html = write_web(&library, "1002", "index.html");
+
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &scratch,
+        &[
+            "play",
+            "1002",
+            "--steam-root",
+            &steam_root,
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        read_argv(&stubs.web_record),
+        vec![
+            stubs.web.display().to_string(),
+            format!("file://{}", html.display()),
+        ]
+    );
+    assert!(
+        !stubs.video_record.exists(),
+        "video player was spawned for a web wallpaper"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn play_scene_id_exits_nonzero_and_does_not_spawn() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let library = workshop_path(&steam_root);
+    write_scene(&library, "1001");
+    write_video(&library, "1002", "wallpaper.mp4");
+
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &scratch,
+        &[
+            "play",
+            "1001",
+            "--steam-root",
+            &steam_root,
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+
+    assert_failed_without_player(&output, &[stubs.video_record, stubs.web_record]);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn play_unknown_id_exits_nonzero_and_does_not_spawn() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let library = workshop_path(&steam_root);
+    write_video(&library, "1001", "wallpaper.mp4");
+
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let output = wallpaper(
+        &scratch,
+        &[
+            "play",
+            "9999",
+            "--steam-root",
+            &steam_root,
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+
+    assert_failed_without_player(&output, &[stubs.video_record, stubs.web_record]);
+    let _ = fs::remove_dir_all(&scratch);
+}
