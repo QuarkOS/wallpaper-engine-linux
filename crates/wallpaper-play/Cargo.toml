@@ -2,7 +2,7 @@
 name = "wallpaper-play"
 version = "0.1.0"
 edition = "2021"
-description = "Plan and launch video and web wallpaper playback."
+description = "Plan and launch the first video or web wallpaper in a library."
 license = "MIT"
 publish = false
 

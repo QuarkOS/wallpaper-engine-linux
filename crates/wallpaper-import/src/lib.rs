@@ -9,7 +9,8 @@
 //! immediate children of a library root, such as a Steam workshop folder, and
 //! returns each project that loads. [`resolve_media`] joins a video or web
 //! entry's project directory with its relative `file` and returns that path
-//! when the file is on disk inside the project.
+//! when the file is on disk inside the project. [`workshop_dir`] is that
+//! library under a Steam root: `steamapps/workshop/content/431960`.
 
 use std::fmt;
 use std::fs;
@@ -44,6 +45,10 @@ pub struct LibraryEntry {
 pub enum ImportError {
     /// `path` exists but is not a directory.
     NotADirectory(PathBuf),
+    /// Wallpaper Engine's workshop folder is not a directory at `path`.
+    ///
+    /// `path` is `steam_root/steamapps/workshop/content/431960`.
+    MissingWorkshop(PathBuf),
     /// The directory has no `project.json`.
     MissingProjectJson(PathBuf),
     /// Reading `project.json` failed.
@@ -72,6 +77,9 @@ impl fmt::Display for ImportError {
                     "wallpaper project is not a directory: {}",
                     path.display()
                 )
+            }
+            ImportError::MissingWorkshop(path) => {
+                write!(f, "workshop library not found: {}", path.display())
             }
             ImportError::MissingProjectJson(path) => {
                 write!(f, "missing project.json at {}", path.display())
@@ -144,6 +152,32 @@ pub fn load_wallpaper(dir: impl AsRef<Path>) -> Result<Wallpaper, ImportError> {
         serde_json::from_str(&text).map_err(|source| ImportError::Json { path, source })?;
 
     classify(project)
+}
+
+/// Steam application id for Wallpaper Engine.
+///
+/// Subscribed workshop items for that app are stored in
+/// `steamapps/workshop/content/431960` under a Steam installation root.
+pub const WALLPAPER_ENGINE_APP_ID: &str = "431960";
+
+/// Wallpaper Engine workshop directory under a Steam installation root.
+///
+/// The returned path is `steam_root/steamapps/workshop/content/431960` when
+/// that directory exists. A missing directory is
+/// [`ImportError::MissingWorkshop`]. This does not read the projects inside;
+/// [`scan_library`] does that.
+pub fn workshop_dir(steam_root: impl AsRef<Path>) -> Result<PathBuf, ImportError> {
+    let workshop = steam_root
+        .as_ref()
+        .join("steamapps")
+        .join("workshop")
+        .join("content")
+        .join(WALLPAPER_ENGINE_APP_ID);
+    if workshop.is_dir() {
+        Ok(workshop)
+    } else {
+        Err(ImportError::MissingWorkshop(workshop))
+    }
 }
 
 /// Scan the immediate children of a library root.

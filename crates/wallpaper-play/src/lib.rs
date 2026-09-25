@@ -5,15 +5,16 @@
 //! a process. A video plan runs `mpv` with an infinite loop of the resolved
 //! file. A web plan runs `xdg-open` with the `file://` URL. Scene,
 //! application, and other unsupported types, and video or web projects whose
-//! media file is missing, are errors from [`plan_playback`]. This crate does
-//! not render wallpapers.
+//! media file is missing, are errors from [`plan_playback`]. [`play_first`]
+//! scans a library, skips unsupported entries, and [`launch`]es the first
+//! video or web wallpaper. This crate does not render wallpapers.
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
-use wallpaper_import::{resolve_media, ImportError, LibraryEntry, Wallpaper};
+use wallpaper_import::{resolve_media, scan_library, ImportError, LibraryEntry, Wallpaper};
 
 /// What a desktop player should run for one library entry.
 ///
@@ -248,4 +249,73 @@ pub fn launch(plan: &PlayPlan, players: &Players) -> Result<Child, LaunchError> 
             LaunchError::Spawn { program, source }
         }
     })
+}
+
+/// Failure while choosing and starting the first playable wallpaper.
+#[derive(Debug)]
+pub enum PlayFirstError {
+    /// [`scan_library`](wallpaper_import::scan_library) failed.
+    Scan(ImportError),
+    /// The library has no video or web wallpaper.
+    ///
+    /// Scene, application, and other unsupported entries were skipped. No
+    /// player process was started.
+    NothingPlayable,
+    /// The first video or web entry could not be turned into a [`PlayPlan`].
+    Play(PlayError),
+    /// The player for that plan could not be started.
+    Launch(LaunchError),
+}
+
+impl fmt::Display for PlayFirstError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlayFirstError::Scan(source) => write!(f, "{source}"),
+            PlayFirstError::NothingPlayable => {
+                write!(f, "library has no video or web wallpaper")
+            }
+            PlayFirstError::Play(source) => write!(f, "{source}"),
+            PlayFirstError::Launch(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl std::error::Error for PlayFirstError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            PlayFirstError::Scan(source) => Some(source),
+            PlayFirstError::Play(source) => Some(source),
+            PlayFirstError::Launch(source) => Some(source),
+            PlayFirstError::NothingPlayable => None,
+        }
+    }
+}
+
+/// Scan `library` and start the first video or web wallpaper.
+///
+/// Entries come from [`scan_library`](wallpaper_import::scan_library), in
+/// directory path order. Scene, application, and other unsupported entries
+/// are skipped. The first video entry is started with [`launch`]: an infinite
+/// loop of the resolved media file. The first web entry, when no video sorts
+/// earlier, is started with the file URL. Later entries are left alone.
+///
+/// A library whose entries are all unsupported, including a library of only
+/// scene projects, returns [`PlayFirstError::NothingPlayable`] and starts no
+/// process. A video or web entry whose media cannot be resolved returns that
+/// error and does not try a later project.
+///
+/// The returned [`Child`] is still running. `players` chooses the executables
+/// the same way [`launch`] does.
+pub fn play_first(library: impl AsRef<Path>, players: &Players) -> Result<Child, PlayFirstError> {
+    let entries = scan_library(library).map_err(PlayFirstError::Scan)?;
+    for entry in &entries {
+        match &entry.wallpaper {
+            Wallpaper::Unsupported { .. } => continue,
+            Wallpaper::Video { .. } | Wallpaper::Web { .. } => {
+                let plan = plan_playback(entry).map_err(PlayFirstError::Play)?;
+                return launch(&plan, players).map_err(PlayFirstError::Launch);
+            }
+        }
+    }
+    Err(PlayFirstError::NothingPlayable)
 }
