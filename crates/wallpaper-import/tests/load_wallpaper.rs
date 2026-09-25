@@ -116,7 +116,7 @@ fn path_that_is_not_a_directory_errors() {
 
     let error = load_wallpaper(&file).expect_err("file path");
     assert!(
-        matches!(error, ImportError::NotADirectory(path) if path == file),
+        matches!(error, ImportError::NotADirectory(ref path) if path == &file),
         "unexpected error: {error}"
     );
 
