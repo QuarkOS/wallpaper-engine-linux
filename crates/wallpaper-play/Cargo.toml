@@ -1,0 +1,10 @@
+[package]
+name = "wallpaper-play"
+version = "0.1.0"
+edition = "2021"
+description = "Turn a resolved video or web wallpaper into a play plan."
+license = "MIT"
+publish = false
+
+[dependencies]
+wallpaper-import = { path = "../wallpaper-import" }
