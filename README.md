@@ -44,8 +44,8 @@ mkdir -p "$HOME/rpmbuild/SOURCES"
 tar -czf "$HOME/rpmbuild/SOURCES/wallpaper-engine-linux-0.1.0.tar.gz" \
   --exclude target \
   --exclude .git \
-  --transform 's,^\./,wallpaper-engine-linux-0.1.0/,' \
-  .
+  --transform 's,^,wallpaper-engine-linux-0.1.0/,' \
+  .gitignore Cargo.lock Cargo.toml README.md rust-toolchain.toml crates packaging ui
 rpmbuild -bb packaging/fedora/wallpaper-engine-linux.spec
 sudo dnf install "$HOME/rpmbuild/RPMS/$(uname -m)/wallpaper-engine-linux-0.1.0-1"*.rpm
 ```
