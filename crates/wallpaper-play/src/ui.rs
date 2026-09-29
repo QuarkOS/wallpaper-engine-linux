@@ -3,10 +3,10 @@
 //! [`serve`] binds to `127.0.0.1` on an ephemeral port, prints that URL, and
 //! serves the page. `GET /api/library` lists each workshop item. `POST
 //! /api/play` with `{"id":"..."}` starts an item through
-//! [`launch`](crate::launch). The page offers video and web items. A scene
-//! with a visible image layer can be started through the play API. A scene
-//! with nothing to show, and any other unsupported item, is an error and
-//! does not start a player.
+//! [`play_entry`](crate::play_entry). The page offers video and web items.
+//! A scene is offered when the live Plasma scene plugin is installed. A
+//! scene with nothing to show, and no live plugin, is an error and does not
+//! start a player.
 
 use std::env;
 use std::ffi::OsStr;
@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use wallpaper_import::{scan_library, ImportError, LibraryEntry, Wallpaper};
 
-use crate::{launch, plan_playback, LaunchError, PlayError, Players};
+use crate::{play_entry, LaunchError, PlayEntryError, PlayError, Players};
 
 const INDEX_HTML: &str = include_str!("../../../ui/index.html");
 const APP_JS: &str = include_str!("../../../ui/app.js");
@@ -120,10 +120,12 @@ fn handle(mut stream: TcpStream, state: &State) -> io::Result<()> {
 }
 
 fn library_json(library: Option<&Path>) -> io::Result<Vec<u8>> {
+    let live_scene = crate::live_scene_plugin_installed();
     let Some(library) = library else {
         return json(&LibraryBody {
             found: false,
             path: None,
+            live_scene,
             items: Vec::new(),
         });
     };
@@ -133,6 +135,7 @@ fn library_json(library: Option<&Path>) -> io::Result<Vec<u8>> {
     json(&LibraryBody {
         found: true,
         path: Some(library.display().to_string()),
+        live_scene,
         items,
     })
 }
@@ -190,8 +193,8 @@ fn start_item(library: &Path, id: &str, players: &Players) -> Result<(), PlayFai
         .iter()
         .find(|entry| entry_id(entry) == id)
         .ok_or_else(|| PlayFailure::UnknownId(id.to_string()))?;
-    let plan = plan_playback(entry).map_err(PlayFailure::Play)?;
-    let mut child = launch(&plan, players).map_err(PlayFailure::Launch)?;
+    let played = play_entry(entry, players).map_err(PlayFailure::from)?;
+    let mut child = played.child;
     thread::spawn(move || {
         let _ = child.wait();
     });
@@ -367,6 +370,8 @@ mod tests {
 struct LibraryBody {
     found: bool,
     path: Option<String>,
+    #[serde(rename = "liveScene")]
+    live_scene: bool,
     items: Vec<ItemBody>,
 }
 
@@ -396,6 +401,15 @@ enum PlayFailure {
     UnknownId(String),
     Play(PlayError),
     Launch(LaunchError),
+}
+
+impl From<PlayEntryError> for PlayFailure {
+    fn from(source: PlayEntryError) -> Self {
+        match source {
+            PlayEntryError::Play(source) => PlayFailure::Play(source),
+            PlayEntryError::Launch(source) => PlayFailure::Launch(source),
+        }
+    }
 }
 
 impl std::fmt::Display for PlayFailure {

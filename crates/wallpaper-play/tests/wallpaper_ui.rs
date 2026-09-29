@@ -135,8 +135,15 @@ impl Drop for RunningUi {
 }
 
 fn start_ui(home: &Path, args: &[&str]) -> RunningUi {
+    start_ui_with_data_dirs(home, home, args)
+}
+
+fn start_ui_with_data_dirs(home: &Path, data_dirs: &Path, args: &[&str]) -> RunningUi {
     let mut child = Command::new(env!("CARGO_BIN_EXE_wallpaper"))
         .env("HOME", home)
+        .env("XDG_DATA_HOME", home.join("xdg-data"))
+        .env("XDG_DATA_DIRS", home.join("xdg-data"))
+        .env("WALLPAPER_PLASMA_DATA_DIRS", data_dirs)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -270,6 +277,7 @@ fn library_api_returns_the_video_item() {
     let payload: serde_json::Value = serde_json::from_str(&body).expect("library json");
     assert_eq!(payload["found"], true);
     assert_eq!(payload["path"], library.display().to_string());
+    assert_eq!(payload["liveScene"], false);
     let items = payload["items"].as_array().expect("items");
     let video = items
         .iter()
@@ -496,5 +504,92 @@ fn page_includes_the_library_hooks() {
     assert!(script.contains("No workshop items found."));
     assert!(script.contains("wallpaper-card"));
     assert!(script.contains("data-id") || script.contains("dataset.id"));
+    assert!(script.contains("payload.liveScene === true"));
+    assert!(script.contains("type === \"scene\" && liveScene === true"));
+    assert!(script.contains("button.disabled = true"));
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn library_reports_the_live_plugin_and_play_selects_it() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let library = workshop_path(&steam_root);
+    let project = library.join("1001");
+    write_project(
+        &project,
+        r#"{"type":"scene","file":"scene.pkg","title":"Packed Scene"}"#,
+    );
+    write_file(&project.join("scene.pkg"), "synthetic scene package");
+    write_video(&library, "1003", "wallpaper.mp4");
+
+    let search = scratch.join("plasma-search");
+    fs::create_dir_all(search.join("plasma/wallpapers/com.github.captsilver.wallpaperEngineKde"))
+        .expect("live package");
+    let plasma_record = scratch.join("plasma-argv");
+    let plasmashell = write_argv_stub(&scratch, "qdbus6", &plasma_record);
+    let stubs = stubs_in(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let plasmashell = plasmashell.display().to_string();
+    let video_player = stubs.video.display().to_string();
+    let web_player = stubs.web.display().to_string();
+    let ui = start_ui_with_data_dirs(
+        &scratch,
+        &search,
+        &[
+            "ui",
+            "--steam-root",
+            &steam_root,
+            "--plasmashell",
+            &plasmashell,
+            "--video-player",
+            &video_player,
+            "--web-player",
+            &web_player,
+        ],
+    );
+
+    let (status, body) = get(ui.port, "/api/library");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("library json");
+    assert_eq!(payload["liveScene"], true);
+    let scene = payload["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == "1001")
+        .expect("scene");
+    assert_eq!(scene["type"], "scene");
+
+    let (status, body) = post_play(ui.port, "1001");
+    assert_eq!(status, 200, "{body}");
+    for _ in 0..100 {
+        if plasma_record.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let script = read_argv(&plasma_record)
+        .into_iter()
+        .next_back()
+        .expect("script");
+    assert!(
+        script.contains("com.github.captsilver.wallpaperEngineKde"),
+        "{script}"
+    );
+    assert!(script.contains(&project.display().to_string()), "{script}");
+    assert!(!script.contains("linux.wallpaper.scene"), "{script}");
+    assert!(
+        !scratch
+            .join("xdg-data/plasma/wallpapers/linux.wallpaper.scene")
+            .exists(),
+        "api play installed the static scene plugin"
+    );
+    thread::sleep(Duration::from_millis(50));
+    assert!(!stubs.video_record.exists(), "scene play spawned mpv");
+    assert!(
+        !stubs.web_record.exists(),
+        "scene play spawned the web player"
+    );
     let _ = fs::remove_dir_all(&scratch);
 }

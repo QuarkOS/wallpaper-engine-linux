@@ -32,8 +32,11 @@ function emptyLibrary() {
   libraryEl.replaceChildren(paragraph);
 }
 
-function playableType(type) {
-  return type === "video" || type === "web";
+function playableType(type, liveScene) {
+  if (type === "video" || type === "web") {
+    return true;
+  }
+  return type === "scene" && liveScene === true;
 }
 
 function renderPreview(item) {
@@ -63,7 +66,7 @@ function renderPreview(item) {
   return media;
 }
 
-function renderCard(item) {
+function renderCard(item, liveScene) {
   const card = document.createElement("article");
   card.className = "wallpaper-card";
 
@@ -80,7 +83,7 @@ function renderCard(item) {
   button.type = "button";
   button.dataset.id = item.id;
   button.textContent = "Play";
-  if (!playableType(item.type)) {
+  if (!playableType(item.type, liveScene)) {
     button.disabled = true;
   }
 
@@ -177,7 +180,8 @@ async function loadLibrary() {
     emptyLibrary();
     return;
   }
-  libraryEl.replaceChildren(...items.map(renderCard));
+  const liveScene = payload.liveScene === true;
+  libraryEl.replaceChildren(...items.map((item) => renderCard(item, liveScene)));
 }
 
 async function addFolder(path) {

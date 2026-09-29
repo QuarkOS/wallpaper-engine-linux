@@ -11,7 +11,8 @@ use std::process::{Child, ExitCode, ExitStatus};
 use wallpaper_import::{scan_library, workshop_dir, ImportError, LibraryEntry, Wallpaper};
 use wallpaper_play::steam_root::{find_steam_root, find_workshop_root, SteamRootError};
 use wallpaper_play::{
-    launch, plan_playback, play_first, LaunchError, PlayError, PlayFirstError, Players,
+    play_entry, play_first, LaunchError, PlayEntryError, PlayError, PlayFirstError, Players,
+    PARTIAL_SCENE_NOTICE,
 };
 
 const USAGE: &str = "\
@@ -25,15 +26,18 @@ Usage: wallpaper list [--steam-root DIR]
 
 list prints one workshop item per line: id, type, and title, sorted by id.
 play ID sets that video, web, or scene item as a KDE Plasma wallpaper.
-A scene with no visible image or video layer, or an id that is not in the
-library, exits with an error and does not start a player.
+When the Wallpaper Engine for KDE plugin is installed, a scene is handed to
+that plugin, including a project that is only scene.pkg. When it is not, a
+scene with an image or video layer stays a partial view and this command
+says so. A scene with nothing to show, or an id that is not in the library,
+exits with an error and does not start a player.
 play with no ID uses the first video or web wallpaper in sorted path order.
 It does not select a scene. A video item is muted and looped behind the
 desktop icons on every desktop Plasma scripting can see. A web item loads
-that page in Qt WebEngine the same way. A scene item shows its visible image
-layers. A video texture loops. A still image has no audio. --sound leaves
-video audio on. Particles, text, models, and scripts in a scene are not
-played.
+that page in Qt WebEngine the same way. A scene item without the live plugin
+shows its visible image layers. A video texture loops. A still image has no
+audio. --sound leaves video audio on. Particles, text, models, and scripts
+in a scene are not played by the partial view.
 --plasmashell is the qdbus tool. It calls
 org.kde.PlasmaShell.evaluateScript. The default is the first of qdbus6,
 qdbus-qt6, and qdbus that is on PATH. A missing plasmashell tool is an error
@@ -219,8 +223,11 @@ fn play_id(library: &Path, id: &str, players: &Players) -> Result<Child, CliErro
         .iter()
         .find(|entry| project_id(entry) == id)
         .ok_or_else(|| CliError::UnknownId(id.to_string()))?;
-    let plan = plan_playback(entry)?;
-    Ok(launch(&plan, players)?)
+    let played = play_entry(entry, players)?;
+    if played.partial_scene {
+        eprintln!("wallpaper: {PARTIAL_SCENE_NOTICE}");
+    }
+    Ok(played.child)
 }
 
 fn project_id(entry: &LibraryEntry) -> String {
@@ -425,6 +432,15 @@ impl From<PlayFirstError> for CliError {
 impl From<PlayError> for CliError {
     fn from(source: PlayError) -> Self {
         CliError::Item(source)
+    }
+}
+
+impl From<PlayEntryError> for CliError {
+    fn from(source: PlayEntryError) -> Self {
+        match source {
+            PlayEntryError::Play(source) => CliError::Item(source),
+            PlayEntryError::Launch(source) => CliError::Launch(source),
+        }
     }
 }
 

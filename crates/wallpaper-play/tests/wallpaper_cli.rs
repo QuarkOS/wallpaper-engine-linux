@@ -142,6 +142,7 @@ fn wallpaper(home: &Path, args: &[&str]) -> Output {
     for _ in 0..50 {
         let output = Command::new(env!("CARGO_BIN_EXE_wallpaper"))
             .env("HOME", home)
+            .env("WALLPAPER_PLASMA_DATA_DIRS", home)
             .args(args)
             .output()
             .expect("run wallpaper");

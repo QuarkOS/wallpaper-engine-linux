@@ -10,16 +10,20 @@
 //! web player to spawn that program with the `file://` URL instead. A scene
 //! plan installs `linux.wallpaper.scene` and shows visible image layers. A
 //! video texture loops muted. A still image has no audio. Particles, text,
-//! models, and scripts are not played. Application projects, a scene with
-//! nothing to show, other unsupported types, and video or web projects whose
-//! media file is missing, are errors from [`plan_playback`]. [`play_first`]
-//! scans a library, skips unsupported entries (including scenes), and
-//! [`launch`]es the first video or web wallpaper.
+//! models, and scripts are not played. [`play_entry`] selects an installed
+//! Wallpaper Engine for KDE plugin for a scene and passes the workshop
+//! project directory. When that plugin is absent, a scene with an image or
+//! video layer stays on `linux.wallpaper.scene`. Application projects, a
+//! scene with nothing to show, other unsupported types, and video or web
+//! projects whose media file is missing, are errors from [`plan_playback`].
+//! [`play_first`] scans a library, skips unsupported entries (including
+//! scenes), and [`launch`]es the first video or web wallpaper.
 //!
 //! The `wallpaper` command calls [`play_first`] on a workshop library, or
-//! [`plan_playback`] when an id is given. `wallpaper ui` serves a local page
-//! that lists the same library and plays one video or web item. A scene with
-//! nothing to show is refused and does not start a player.
+//! [`play_entry`] when an id is given. `wallpaper ui` serves a local page
+//! that lists the same library and plays one video or web item. A scene is
+//! offered on that page when the live plugin is installed. A scene with
+//! nothing to show, and no live plugin, is refused and does not start a player.
 //! `wallpaper play --steam-root DIR` uses that Steam root, then any extra
 //! library named in its `steamapps/libraryfolders.vdf`. Without
 //! `--steam-root`, [`steam_root::find_steam_root`] checks `~/.steam/steam`,
@@ -42,10 +46,14 @@ pub mod ui;
 
 pub use plasma::{
     install_plasma_scene_wallpaper, install_plasma_video_wallpaper, install_plasma_web_wallpaper,
-    plasma_scene_wallpaper_dir, plasma_scene_wallpaper_script, plasma_wallpaper_dir,
-    plasma_wallpaper_script, plasma_web_wallpaper_dir, plasma_web_wallpaper_script,
-    PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_SCENE_WALLPAPER_PLUGIN,
-    PLASMA_VIDEO_WALLPAPER_PLUGIN, PLASMA_WEB_WALLPAPER_PLUGIN,
+    live_scene_data_dirs, live_scene_data_dirs_from, live_scene_plugin_installed,
+    live_scene_plugin_installed_in, live_scene_wallpaper_script, plasma_scene_wallpaper_dir,
+    plasma_scene_wallpaper_script, plasma_wallpaper_dir, plasma_wallpaper_script,
+    plasma_web_wallpaper_dir, plasma_web_wallpaper_script, LIVE_SCENE_DATA_DIRS_ENV,
+    LIVE_SCENE_MUTE_KEY, LIVE_SCENE_PLUGIN_ID, LIVE_SCENE_SOURCE_KEY, LIVE_SCENE_UPSTREAM_URL,
+    LIVE_SCENE_WORKSHOP_ID_KEY, PARTIAL_SCENE_NOTICE, PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH,
+    PLASMA_DBUS_SERVICE, PLASMA_SCENE_WALLPAPER_PLUGIN, PLASMA_VIDEO_WALLPAPER_PLUGIN,
+    PLASMA_WEB_WALLPAPER_PLUGIN,
 };
 
 /// One visible image layer resolved from a scene.
@@ -384,6 +392,9 @@ impl std::error::Error for LaunchError {
 /// [`LaunchError::MissingPlayer`], or [`LaunchError::MissingPlasmashell`]
 /// for a Plasma path. A missing plasmashell tool does not fall back to
 /// `mpv` or `xdg-open`.
+///
+/// A scene plan always uses `linux.wallpaper.scene`. The installed live
+/// plugin is selected by [`play_entry`], not by this function.
 pub fn launch(plan: &PlayPlan, players: &Players) -> Result<Child, LaunchError> {
     match plan {
         PlayPlan::Scene { layers } => plasma::launch_plasma_scene_wallpaper(layers, players),
@@ -458,6 +469,80 @@ impl std::error::Error for PlayFirstError {
             PlayFirstError::NothingPlayable => None,
         }
     }
+}
+
+/// A wallpaper [`play_entry`] started.
+pub struct Played {
+    /// The plasmashell tool, or the explicit video or web player.
+    pub child: Child,
+    /// The static scene plugin is showing image and video layers only.
+    ///
+    /// The command prints [`PARTIAL_SCENE_NOTICE`] in this case. A live
+    /// plugin selection leaves this false.
+    pub partial_scene: bool,
+}
+
+/// Failure from [`play_entry`].
+#[derive(Debug)]
+pub enum PlayEntryError {
+    /// [`plan_playback`] failed. Nothing was spawned.
+    Play(PlayError),
+    /// The player or plasmashell tool could not be started.
+    Launch(LaunchError),
+}
+
+impl fmt::Display for PlayEntryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlayEntryError::Play(source) => write!(f, "{source}"),
+            PlayEntryError::Launch(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl std::error::Error for PlayEntryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            PlayEntryError::Play(source) => Some(source),
+            PlayEntryError::Launch(source) => Some(source),
+        }
+    }
+}
+
+/// Start one library entry.
+///
+/// A scene whose live Plasma plugin is installed is selected through that
+/// plugin. The workshop project directory is written into the plasmashell
+/// script. `linux.wallpaper.scene` is not installed for that play. This
+/// includes a project that is only `scene.pkg` and has no image layers.
+///
+/// When that plugin is absent, this is [`plan_playback`] followed by
+/// [`launch`]. A scene with an image or video layer sets
+/// [`Played::partial_scene`]. A scene with nothing to show returns
+/// [`PlayError::Unsupported`] and spawns nothing.
+///
+/// Video and web entries are unchanged. [`Players::plasma`] and
+/// [`Players::web_plasma`] do not change scene playback.
+pub fn play_entry(entry: &LibraryEntry, players: &Players) -> Result<Played, PlayEntryError> {
+    if is_scene_entry(entry) && plasma::live_scene_plugin_installed() {
+        let child =
+            plasma::launch_live_scene(&entry.directory, players).map_err(PlayEntryError::Launch)?;
+        return Ok(Played {
+            child,
+            partial_scene: false,
+        });
+    }
+    let plan = plan_playback(entry).map_err(PlayEntryError::Play)?;
+    let partial_scene = matches!(plan, PlayPlan::Scene { .. });
+    let child = launch(&plan, players).map_err(PlayEntryError::Launch)?;
+    Ok(Played {
+        child,
+        partial_scene,
+    })
+}
+
+fn is_scene_entry(entry: &LibraryEntry) -> bool {
+    matches!(&entry.wallpaper, Wallpaper::Unsupported { kind } if is_scene(kind))
 }
 
 /// Scan `library` and start the first video or web wallpaper.

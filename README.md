@@ -135,7 +135,9 @@ wallpaper play 1234567890 --web-player /usr/bin/firefox
 
 ## Scene wallpapers
 
-On KDE Plasma 6, `play` of a scene id installs a wallpaper plugin into `~/.local/share/plasma/wallpapers/linux.wallpaper.scene` (or `$XDG_DATA_HOME/plasma/wallpapers/linux.wallpaper.scene`) and selects it with the same Plasma Shell scripting call as a video wallpaper. Image layers in a scene can show on the desktop. The first resolved image or video fills the desktop. A video used as a layer texture loops. Audio for that video is muted. Pass `--sound` to leave it on. A still image has no audio.
+If [Wallpaper Engine for KDE](https://github.com/CaptSilver/wallpaper-engine-kde-plugin) is installed (`com.github.captsilver.wallpaperEngineKde` under `/usr/share/plasma/wallpapers`, `$XDG_DATA_HOME/plasma/wallpapers`, or an entry of `$XDG_DATA_DIRS`), `wallpaper play ID` selects that plugin and passes the workshop project directory. That play does not install `linux.wallpaper.scene`. It works for a project that is only `scene.pkg`. When the plugin is absent, a scene with an image or video layer still uses `linux.wallpaper.scene`, and the command says that view is partial. A scene with nothing our plugin can show still exits with an error and starts no player. The library page enables Play on a scene only when the API reports that plugin.
+
+On KDE Plasma 6, that partial view installs a wallpaper plugin into `~/.local/share/plasma/wallpapers/linux.wallpaper.scene` (or `$XDG_DATA_HOME/plasma/wallpapers/linux.wallpaper.scene`) and selects it with the same Plasma Shell scripting call as a video wallpaper. Image layers in a scene can show on the desktop. The first resolved image or video fills the desktop. A video used as a layer texture loops. Audio for that video is muted. Pass `--sound` to leave it on. A still image has no audio.
 
 Particles, text, models, and scripts still cannot. A scene with no resolvable image or video layer exits with an error and starts no player. Installing the scene plugin does not remove the video or web plugin.
 

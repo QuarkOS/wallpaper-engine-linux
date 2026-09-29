@@ -10,8 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use wallpaper_import::scan_library;
 use wallpaper_play::{
     install_plasma_scene_wallpaper, install_plasma_video_wallpaper, install_plasma_web_wallpaper,
-    launch, plasma_scene_wallpaper_dir, plasma_scene_wallpaper_script, LaunchError, PlayError,
-    PlayPlan, Players, SceneVisual, PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE,
+    launch, live_scene_data_dirs_from, live_scene_plugin_installed_in, plasma_scene_wallpaper_dir,
+    plasma_scene_wallpaper_script, LaunchError, PlayError, PlayPlan, Players, SceneVisual,
+    LIVE_SCENE_MUTE_KEY, LIVE_SCENE_PLUGIN_ID, LIVE_SCENE_SOURCE_KEY, LIVE_SCENE_UPSTREAM_URL,
+    LIVE_SCENE_WORKSHOP_ID_KEY, PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE,
     PLASMA_SCENE_WALLPAPER_PLUGIN, PLASMA_VIDEO_WALLPAPER_PLUGIN, PLASMA_WEB_WALLPAPER_PLUGIN,
 };
 
@@ -647,6 +649,8 @@ fn wallpaper_env(home: &Path, data_home: &Path, path: &Path, args: &[&str]) -> O
         let output = Command::new(env!("CARGO_BIN_EXE_wallpaper"))
             .env("HOME", home)
             .env("XDG_DATA_HOME", data_home)
+            .env("XDG_DATA_DIRS", data_home)
+            .env("WALLPAPER_PLASMA_DATA_DIRS", data_home)
             .env("PATH", path)
             .args(args)
             .output()
@@ -710,6 +714,15 @@ fn wallpaper_play_scene_selects_the_plugin_and_spawns_nothing_else() {
     assert!(script.contains(PLASMA_SCENE_WALLPAPER_PLUGIN), "{script}");
     assert!(script.contains("desktops()"), "{script}");
     assert!(script.contains("writeConfig(\"Muted\", true)"), "{script}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("partial view"),
+        "static scene play did not say the view is partial: {stderr}"
+    );
+    assert!(
+        stderr.contains("https://github.com/CaptSilver/wallpaper-engine-kde-plugin"),
+        "{stderr}"
+    );
     assert!(!script.contains("mpv"), "{script}");
     assert!(!script.contains("xdg-open"), "{script}");
     assert!(!script.contains("linux.wallpaper.video"), "{script}");
@@ -843,6 +856,10 @@ fn wallpaper_play_missing_scene_spawns_nothing() {
         stderr.contains("wallpaper type `scene` cannot be played"),
         "{stderr}"
     );
+    assert!(
+        !stderr.contains("partial view"),
+        "unplayable scene printed a partial view: {stderr}"
+    );
     assert!(!plasma_record.exists(), "missing scene called plasmashell");
     assert!(!mpv_record.exists(), "missing scene spawned mpv");
     assert!(!open_record.exists(), "missing scene spawned xdg-open");
@@ -885,4 +902,286 @@ fn missing_plasmashell_for_a_scene_does_not_spawn_mpv() {
         "missing plasmashell spawned xdg-open"
     );
     let _ = fs::remove_dir_all(&root);
+}
+
+fn install_live_package(data_dir: &Path) {
+    let package = data_dir
+        .join("plasma")
+        .join("wallpapers")
+        .join(LIVE_SCENE_PLUGIN_ID);
+    fs::create_dir_all(&package).expect("live package dir");
+    fs::write(package.join("metadata.json"), "{}\n").expect("live metadata");
+}
+
+fn run_play(home: &Path, data_home: &Path, search: &Path, path: &Path, args: &[&str]) -> Output {
+    let mut last = None;
+    for _ in 0..50 {
+        let output = Command::new(env!("CARGO_BIN_EXE_wallpaper"))
+            .env("HOME", home)
+            .env("XDG_DATA_HOME", data_home)
+            .env("XDG_DATA_DIRS", data_home)
+            .env("WALLPAPER_PLASMA_DATA_DIRS", search)
+            .env("PATH", path)
+            .args(args)
+            .output()
+            .expect("run wallpaper");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("Text file busy") {
+            return output;
+        }
+        last = Some(output);
+        thread::sleep(Duration::from_millis(5));
+    }
+    last.expect("busy wallpaper")
+}
+
+#[test]
+fn live_scene_plugin_is_found_only_as_a_package_directory() {
+    let root = scratch_dir();
+    let usr = root.join("usr-share");
+    let home = root.join("xdg-home");
+    let first = root.join("xdg-first");
+    let second = root.join("xdg-second");
+    assert!(!live_scene_plugin_installed_in(&[
+        usr.clone(),
+        home.clone(),
+        first.clone(),
+        second.clone(),
+    ]));
+
+    let not_a_dir = root.join("file-root");
+    write_file(
+        &not_a_dir
+            .join("plasma")
+            .join("wallpapers")
+            .join(LIVE_SCENE_PLUGIN_ID),
+        "not a package directory",
+    );
+    assert!(!live_scene_plugin_installed_in(&[not_a_dir]));
+
+    install_live_package(&usr);
+    assert!(live_scene_plugin_installed_in(&[usr.clone()]));
+    assert!(!live_scene_plugin_installed_in(&[home.clone()]));
+
+    let joined = std::env::join_paths([&first, &second]).expect("join data dirs");
+    let searched = live_scene_data_dirs_from(None, Some(&home), Some(joined.as_os_str()));
+    assert!(searched.iter().any(|dir| dir == Path::new("/usr/share")));
+    assert!(searched.iter().any(|dir| dir == &home));
+    assert!(searched.iter().any(|dir| dir == &first));
+    assert!(searched.iter().any(|dir| dir == &second));
+
+    install_live_package(&second);
+    assert!(live_scene_plugin_installed_in(&searched));
+    assert!(!live_scene_plugin_installed_in(&[first.clone()]));
+
+    let only = live_scene_data_dirs_from(Some(second.as_os_str()), Some(&home), None);
+    assert_eq!(only, vec![second.clone()]);
+    assert!(live_scene_plugin_installed_in(&only));
+
+    let none = live_scene_data_dirs_from(Some(std::ffi::OsStr::new("")), Some(&home), None);
+    assert!(none.is_empty());
+    assert!(!live_scene_plugin_installed_in(&none));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn wallpaper_play_scene_pkg_selects_the_live_plugin() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let project = workshop_path(&steam_root).join("1001");
+    write_project(
+        &project,
+        r#"{"type":"scene","file":"scene.pkg","title":"Packed Scene"}"#,
+    );
+    write_file(&project.join("scene.pkg"), "synthetic scene package");
+
+    let search = scratch.join("plasma-search");
+    install_live_package(&search);
+    let data_home = scratch.join("user-data");
+    let bin = scratch.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let plasma_record = scratch.join("plasma-argv");
+    let mpv_record = scratch.join("mpv-argv");
+    let open_record = scratch.join("xdg-argv");
+    let plasmashell = write_argv_stub(&bin, "qdbus6", &plasma_record);
+    write_argv_stub(&bin, "mpv", &mpv_record);
+    write_argv_stub(&bin, "xdg-open", &open_record);
+
+    let steam_root = steam_root.display().to_string();
+    let output = run_play(
+        &scratch,
+        &data_home,
+        &search,
+        &bin,
+        &["play", "1001", "--steam-root", &steam_root],
+    );
+    assert!(
+        output.status.success(),
+        "wallpaper failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("partial view"),
+        "live scene play said the view is partial: {stderr}"
+    );
+
+    let argv = read_argv(&plasma_record);
+    assert!(
+        argv[0] == "qdbus6" || argv[0] == plasmashell.display().to_string(),
+        "plasmashell was not qdbus6: {}",
+        argv[0]
+    );
+    assert_eq!(argv[1], PLASMA_DBUS_SERVICE);
+    assert_eq!(argv[2], PLASMA_DBUS_PATH);
+    assert_eq!(argv[3], PLASMA_DBUS_METHOD);
+    let script = argv.last().expect("script argument");
+    assert!(script.contains(LIVE_SCENE_PLUGIN_ID), "{script}");
+    assert!(script.contains(&project.display().to_string()), "{script}");
+    assert!(
+        script.contains(&format!("writeConfig(\"{LIVE_SCENE_SOURCE_KEY}\"")),
+        "{script}"
+    );
+    assert!(
+        script.contains(&format!("writeConfig(\"{LIVE_SCENE_WORKSHOP_ID_KEY}\"")),
+        "{script}"
+    );
+    assert!(script.contains("scene.pkg+scene"), "{script}");
+    assert!(script.contains("1001"), "{script}");
+    assert!(
+        script.contains(&format!("writeConfig(\"{LIVE_SCENE_MUTE_KEY}\", true)")),
+        "{script}"
+    );
+    assert!(script.contains("desktops()"), "{script}");
+    assert!(!script.contains(PLASMA_SCENE_WALLPAPER_PLUGIN), "{script}");
+    assert!(!script.contains("linux.wallpaper.video"), "{script}");
+    assert!(!script.contains("linux.wallpaper.web"), "{script}");
+    assert!(!mpv_record.exists(), "live scene spawned mpv");
+    assert!(!open_record.exists(), "live scene spawned xdg-open");
+    assert!(
+        !data_home
+            .join("plasma/wallpapers")
+            .join(PLASMA_SCENE_WALLPAPER_PLUGIN)
+            .exists(),
+        "live scene installed linux.wallpaper.scene"
+    );
+    assert!(
+        !search
+            .join("plasma/wallpapers")
+            .join(PLASMA_SCENE_WALLPAPER_PLUGIN)
+            .exists(),
+        "live scene installed linux.wallpaper.scene into the search root"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn wallpaper_play_scene_with_layers_still_uses_the_live_plugin() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let project = workshop_path(&steam_root).join("1001");
+    direct_image_scene(&project, "layer.png");
+    let search = scratch.join("plasma-search");
+    install_live_package(&search);
+    let data_home = scratch.join("user-data");
+    let bin = scratch.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let plasma_record = scratch.join("plasma-argv");
+    let mpv_record = scratch.join("mpv-argv");
+    write_argv_stub(&bin, "qdbus6", &plasma_record);
+    let mpv = write_argv_stub(&bin, "mpv", &mpv_record);
+
+    let steam_root = steam_root.display().to_string();
+    let video_player = mpv.display().to_string();
+    let output = run_play(
+        &scratch,
+        &data_home,
+        &search,
+        &bin,
+        &[
+            "play",
+            "1001",
+            "--sound",
+            "--steam-root",
+            &steam_root,
+            "--video-player",
+            &video_player,
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "wallpaper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let script = read_argv(&plasma_record)
+        .into_iter()
+        .next_back()
+        .expect("script");
+    assert!(script.contains(LIVE_SCENE_PLUGIN_ID), "{script}");
+    assert!(script.contains(&project.display().to_string()), "{script}");
+    assert!(
+        script.contains(&format!("writeConfig(\"{LIVE_SCENE_MUTE_KEY}\", false)")),
+        "{script}"
+    );
+    assert!(!script.contains(PLASMA_SCENE_WALLPAPER_PLUGIN), "{script}");
+    assert!(!script.contains("layer.png"), "{script}");
+    assert!(!mpv_record.exists(), "live scene spawned mpv");
+    assert!(
+        !data_home
+            .join("plasma/wallpapers")
+            .join(PLASMA_SCENE_WALLPAPER_PLUGIN)
+            .exists(),
+        "layered scene installed the static plugin"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("partial view"), "{stderr}");
+    assert!(
+        !stderr.contains(LIVE_SCENE_UPSTREAM_URL),
+        "live scene play printed the partial-view url: {stderr}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn wallpaper_play_scene_pkg_without_the_live_plugin_spawns_nothing() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let project = workshop_path(&steam_root).join("1001");
+    write_project(
+        &project,
+        r#"{"type":"scene","file":"scene.pkg","title":"Packed Scene"}"#,
+    );
+    write_file(&project.join("scene.pkg"), "synthetic scene package");
+    let data_home = scratch.join("data");
+    let bin = scratch.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let plasma_record = scratch.join("plasma-argv");
+    let mpv_record = scratch.join("mpv-argv");
+    write_argv_stub(&bin, "qdbus6", &plasma_record);
+    write_argv_stub(&bin, "mpv", &mpv_record);
+
+    let steam_root = steam_root.display().to_string();
+    let output = wallpaper_env(
+        &scratch,
+        &data_home,
+        &bin,
+        &["play", "1001", "--steam-root", &steam_root],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "scene.pkg exited 0: {stderr}");
+    assert!(
+        stderr.contains("wallpaper type `scene` cannot be played"),
+        "{stderr}"
+    );
+    assert!(!plasma_record.exists(), "scene.pkg called plasmashell");
+    assert!(!mpv_record.exists(), "scene.pkg spawned mpv");
+    assert!(
+        !data_home
+            .join("plasma/wallpapers")
+            .join(PLASMA_SCENE_WALLPAPER_PLUGIN)
+            .exists(),
+        "scene.pkg installed the static plugin"
+    );
+    let _ = fs::remove_dir_all(&scratch);
 }
