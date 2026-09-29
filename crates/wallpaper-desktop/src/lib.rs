@@ -155,5 +155,6 @@ fn options_from_args(
         home: env::var_os("HOME").map(PathBuf::from),
         config_home: default_config_home(),
         players,
+        plasma_data_dirs: None,
     })
 }

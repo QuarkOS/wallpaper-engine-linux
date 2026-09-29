@@ -46,14 +46,14 @@ pub mod ui;
 
 pub use plasma::{
     install_plasma_scene_wallpaper, install_plasma_video_wallpaper, install_plasma_web_wallpaper,
-    live_scene_data_dirs, live_scene_data_dirs_from, live_scene_plugin_installed,
-    live_scene_plugin_installed_in, live_scene_wallpaper_script, plasma_scene_wallpaper_dir,
-    plasma_scene_wallpaper_script, plasma_wallpaper_dir, plasma_wallpaper_script,
-    plasma_web_wallpaper_dir, plasma_web_wallpaper_script, LIVE_SCENE_DATA_DIRS_ENV,
-    LIVE_SCENE_MUTE_KEY, LIVE_SCENE_PLUGIN_ID, LIVE_SCENE_SOURCE_KEY, LIVE_SCENE_UPSTREAM_URL,
-    LIVE_SCENE_WORKSHOP_ID_KEY, PARTIAL_SCENE_NOTICE, PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH,
-    PLASMA_DBUS_SERVICE, PLASMA_SCENE_WALLPAPER_PLUGIN, PLASMA_VIDEO_WALLPAPER_PLUGIN,
-    PLASMA_WEB_WALLPAPER_PLUGIN,
+    launch_live_scene, live_scene_data_dirs, live_scene_data_dirs_from,
+    live_scene_plugin_installed, live_scene_plugin_installed_in, live_scene_wallpaper_script,
+    plasma_scene_wallpaper_dir, plasma_scene_wallpaper_script, plasma_wallpaper_dir,
+    plasma_wallpaper_script, plasma_web_wallpaper_dir, plasma_web_wallpaper_script,
+    LIVE_SCENE_DATA_DIRS_ENV, LIVE_SCENE_MUTE_KEY, LIVE_SCENE_PLUGIN_ID, LIVE_SCENE_SOURCE_KEY,
+    LIVE_SCENE_UPSTREAM_URL, LIVE_SCENE_WORKSHOP_ID_KEY, PARTIAL_SCENE_NOTICE, PLASMA_DBUS_METHOD,
+    PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_SCENE_WALLPAPER_PLUGIN,
+    PLASMA_VIDEO_WALLPAPER_PLUGIN, PLASMA_WEB_WALLPAPER_PLUGIN,
 };
 
 /// One visible image layer resolved from a scene.

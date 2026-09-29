@@ -508,7 +508,7 @@ pub(crate) fn launch_plasma_scene_wallpaper(
 /// [`PLASMA_SCENE_WALLPAPER_PLUGIN`] and does not spawn a video player or a
 /// web browser. A missing plasmashell tool is
 /// [`LaunchError::MissingPlasmashell`].
-pub(crate) fn launch_live_scene(directory: &Path, players: &Players) -> Result<Child, LaunchError> {
+pub fn launch_live_scene(directory: &Path, players: &Players) -> Result<Child, LaunchError> {
     let script = live_scene_wallpaper_script(directory, players.muted);
     evaluate_plasma_script(&players.plasmashell, &script)
 }

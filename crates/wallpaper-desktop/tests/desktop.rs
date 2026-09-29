@@ -12,7 +12,9 @@ use wallpaper_desktop::{
     autostart_desktop_path, collect_library, load_settings, serve, set_autostart,
     set_extra_library, settings_path, DesktopOptions, Server,
 };
-use wallpaper_play::Players;
+use wallpaper_play::{
+    plasma_scene_wallpaper_dir, Players, LIVE_SCENE_PLUGIN_ID, PLASMA_SCENE_WALLPAPER_PLUGIN,
+};
 
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -140,6 +142,7 @@ fn options(scratch: &Path, steam_root: PathBuf, players: Players) -> DesktopOpti
         home: Some(scratch.join("home")),
         config_home: scratch.join("config"),
         players,
+        plasma_data_dirs: Some(vec![scratch.join("no-live-plugin")]),
     }
 }
 
@@ -347,6 +350,7 @@ fn library_page_serves_previews_rescan_extra_folder_and_autostart() {
     assert_eq!(status, 200, "{body}");
     let payload: serde_json::Value = serde_json::from_str(&body).expect("library json");
     assert_eq!(payload["found"], true);
+    assert_eq!(payload["liveScene"], false);
     assert_eq!(payload["path"], library.display().to_string());
     let items = payload["items"].as_array().expect("items");
     let image_item = items
@@ -582,5 +586,168 @@ fn desktop_without_a_display_serves_and_stays_up() {
         Err(error) => panic!("wait failed: {error}"),
     }
 
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+fn install_live_package(data_dir: &Path) {
+    let package = data_dir
+        .join("plasma")
+        .join("wallpapers")
+        .join(LIVE_SCENE_PLUGIN_ID);
+    fs::create_dir_all(&package).expect("live package dir");
+    fs::write(package.join("metadata.json"), "{}\n").expect("live metadata");
+}
+
+fn post_play(port: u16, id: &str) -> (u16, String) {
+    let json = format!(r#"{{"id":"{id}"}}"#);
+    let mut last = (0, String::new());
+    for _ in 0..50 {
+        last = post_json(port, "/api/play", &json);
+        if last.0 == 200 || !last.1.contains("Text file busy") {
+            return last;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    last
+}
+
+fn wait_for_argv(record: &Path) -> Vec<String> {
+    for _ in 0..100 {
+        if record.exists() {
+            return read_argv(record);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("argv record was not written: {}", record.display());
+}
+
+fn scene_players(scratch: &Path, plasmashell: PathBuf, data_home: PathBuf) -> Players {
+    let stubs = stubs_in(scratch);
+    Players {
+        video: stubs.video,
+        web: stubs.web,
+        plasma: false,
+        web_plasma: false,
+        plasmashell,
+        plasma_data_home: data_home,
+        muted: true,
+    }
+}
+
+#[test]
+fn library_live_scene_is_false_without_the_plugin_and_play_stays_partial() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let project = workshop_path(&steam_root).join("1001");
+    write_project(
+        &project,
+        r#"{"type":"scene","file":"scene.json","title":"Synthetic Scene"}"#,
+    );
+    write_file(
+        &project.join("scene.json"),
+        r#"{"objects":[{"classname":"ImageLayer","image":"layer.png","visible":true}]}"#,
+    );
+    let image = project.join("layer.png");
+    write_file(&image, "synthetic png bytes");
+
+    let search = scratch.join("empty-plasma-search");
+    fs::create_dir_all(&search).expect("empty search dir");
+    let data_home = scratch.join("data-home");
+    let plasma_record = scratch.join("plasma-argv");
+    let plasmashell = write_argv_stub(&scratch, "qdbus", &plasma_record);
+    let players = scene_players(&scratch, plasmashell, data_home.clone());
+    let video_record = players.video.with_file_name("video-argv");
+    let web_record = players.web.with_file_name("web-argv");
+    let server = serve_options(DesktopOptions {
+        steam_root: Some(steam_root),
+        home: Some(scratch.join("home")),
+        config_home: scratch.join("config"),
+        players,
+        plasma_data_dirs: Some(vec![search]),
+    });
+
+    let (status, body) = get(server.port(), "/api/library");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("library json");
+    assert_eq!(payload["liveScene"], false);
+    let scene = payload["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == "1001")
+        .expect("scene");
+    assert_eq!(scene["type"], "scene");
+
+    let (status, body) = post_play(server.port(), "1001");
+    assert_eq!(status, 200, "{body}");
+    let script = wait_for_argv(&plasma_record)
+        .into_iter()
+        .next_back()
+        .expect("script");
+    assert!(script.contains(PLASMA_SCENE_WALLPAPER_PLUGIN), "{script}");
+    assert!(script.contains("layer.png"), "{script}");
+    assert!(!script.contains(LIVE_SCENE_PLUGIN_ID), "{script}");
+    assert!(
+        plasma_scene_wallpaper_dir(&data_home)
+            .join("metadata.json")
+            .is_file(),
+        "partial scene play did not install the static plugin"
+    );
+    assert!(!video_record.exists(), "partial scene play spawned video");
+    assert!(!web_record.exists(), "partial scene play spawned web");
+
+    drop(server);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn library_live_scene_is_true_when_the_plugin_directory_exists() {
+    let scratch = scratch_dir();
+    let steam_root = scratch.join("steam-root");
+    let project = workshop_path(&steam_root).join("1001");
+    write_project(
+        &project,
+        r#"{"type":"scene","file":"scene.pkg","title":"Packed Scene"}"#,
+    );
+    write_file(&project.join("scene.pkg"), "synthetic scene package");
+
+    let search = scratch.join("plasma-search");
+    install_live_package(&search);
+    let data_home = scratch.join("data-home");
+    let plasma_record = scratch.join("plasma-argv");
+    let plasmashell = write_argv_stub(&scratch, "qdbus", &plasma_record);
+    let players = scene_players(&scratch, plasmashell, data_home.clone());
+    let video_record = players.video.with_file_name("video-argv");
+    let web_record = players.web.with_file_name("web-argv");
+    let server = serve_options(DesktopOptions {
+        steam_root: Some(steam_root),
+        home: Some(scratch.join("home")),
+        config_home: scratch.join("config"),
+        players,
+        plasma_data_dirs: Some(vec![search]),
+    });
+
+    let (status, body) = get(server.port(), "/api/library");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("library json");
+    assert_eq!(payload["liveScene"], true);
+
+    let (status, body) = post_play(server.port(), "1001");
+    assert_eq!(status, 200, "{body}");
+    let script = wait_for_argv(&plasma_record)
+        .into_iter()
+        .next_back()
+        .expect("script");
+    assert!(script.contains(LIVE_SCENE_PLUGIN_ID), "{script}");
+    assert!(script.contains(&project.display().to_string()), "{script}");
+    assert!(!script.contains(PLASMA_SCENE_WALLPAPER_PLUGIN), "{script}");
+    assert!(
+        !plasma_scene_wallpaper_dir(&data_home).exists(),
+        "live scene play installed the static plugin"
+    );
+    assert!(!video_record.exists(), "live scene play spawned video");
+    assert!(!web_record.exists(), "live scene play spawned web");
+
+    drop(server);
     let _ = fs::remove_dir_all(&scratch);
 }

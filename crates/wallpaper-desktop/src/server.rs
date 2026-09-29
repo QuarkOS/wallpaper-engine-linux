@@ -1,10 +1,12 @@
 //! Local page for the desktop window.
 //!
 //! The page is the same `ui/` files `wallpaper ui` serves, plus settings.
-//! `GET /api/library` lists Steam and the extra folder. `POST /api/play`
-//! starts a video or web item through [`launch`](wallpaper_play::launch).
-//! Scene items stay in the list. Playing one is an error and does not start
-//! a player. This function does not open a window.
+//! `GET /api/library` lists Steam and the extra folder. `liveScene` is true
+//! when the Wallpaper Engine for KDE plugin is installed. `POST /api/play`
+//! calls [`plan_playback`](wallpaper_play::plan_playback). A scene then uses
+//! that plugin when it is installed, and the partial static scene view when
+//! it is not. A scene with nothing to show, and no live plugin, is an error
+//! and does not start a player. This function does not open a window.
 
 use std::collections::HashMap;
 use std::fs;
@@ -18,8 +20,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
-use wallpaper_import::{scan_library, LibraryEntry};
-use wallpaper_play::{launch, plan_playback, LaunchError, PlayError, Players};
+use wallpaper_import::{scan_library, LibraryEntry, Wallpaper};
+use wallpaper_play::{
+    launch, launch_live_scene, live_scene_plugin_installed, live_scene_plugin_installed_in,
+    plan_playback, LaunchError, PlayError, Players,
+};
 
 use crate::library::{collect_library, decode_id, encode_id, resolve_workshop, LibraryCard};
 use crate::settings::{load_settings, set_autostart, set_extra_library, Settings};
@@ -34,6 +39,12 @@ struct State {
     home: Option<PathBuf>,
     config_home: PathBuf,
     players: Players,
+    /// Plasma data directories for the live scene plugin.
+    ///
+    /// `None` uses [`live_scene_plugin_installed`], which reads
+    /// `WALLPAPER_PLASMA_DATA_DIRS`, `/usr/share`, `$XDG_DATA_HOME`, and
+    /// `$XDG_DATA_DIRS`.
+    plasma_data_dirs: Option<Vec<PathBuf>>,
     settings_lock: Mutex<()>,
 }
 
@@ -71,6 +82,9 @@ pub struct DesktopOptions {
     pub home: Option<PathBuf>,
     pub config_home: PathBuf,
     pub players: Players,
+    /// Replaces the live-plugin search. `None` uses the wallpaper-play search,
+    /// including `WALLPAPER_PLASMA_DATA_DIRS`.
+    pub plasma_data_dirs: Option<Vec<PathBuf>>,
 }
 
 /// Bind `127.0.0.1` and serve until [`Server`] is dropped.
@@ -86,6 +100,7 @@ pub fn serve(options: DesktopOptions) -> io::Result<Server> {
         home: options.home,
         config_home: options.config_home,
         players: options.players,
+        plasma_data_dirs: options.plasma_data_dirs,
         settings_lock: Mutex::new(()),
     });
     let thread = thread::spawn(move || accept_loop(listener, stop_flag, state));
@@ -190,6 +205,7 @@ fn library(stream: &mut TcpStream, state: &State) -> io::Result<()> {
         found: steam.is_some(),
         path: steam.map(|path| path.display().to_string()),
         extra_library: extra.map(|path| path.display().to_string()),
+        live_scene: scene_plugin_installed(state),
         items,
     };
     write_json(stream, 200, &body)
@@ -381,12 +397,37 @@ fn start_item(state: &State, id: &str) -> Result<(), PlayFailure> {
         }
     }
     let entry = found.ok_or_else(|| PlayFailure::UnknownId(id.to_string()))?;
-    let plan = plan_playback(&entry).map_err(PlayFailure::Play)?;
-    let mut child = launch(&plan, &state.players).map_err(PlayFailure::Launch)?;
+    // `plan_playback` still runs for every play. A scene with the live plugin
+    // installed is handed to that plugin, including a project that is only
+    // scene.pkg. Otherwise the plan is launched: image and video layers use
+    // the partial static plugin, and a scene with nothing to show errors.
+    let plan = plan_playback(&entry);
+    let mut child = if is_scene(&entry) && scene_plugin_installed(state) {
+        launch_live_scene(&entry.directory, &state.players).map_err(PlayFailure::Launch)?
+    } else {
+        let plan = plan.map_err(PlayFailure::Play)?;
+        launch(&plan, &state.players).map_err(PlayFailure::Launch)?
+    };
     thread::spawn(move || {
         let _ = child.wait();
     });
     Ok(())
+}
+
+fn is_scene(entry: &LibraryEntry) -> bool {
+    matches!(
+        &entry.wallpaper,
+        Wallpaper::Unsupported { kind } if kind.eq_ignore_ascii_case("scene")
+    )
+}
+
+/// Same package check as `wallpaper play`: `WALLPAPER_PLASMA_DATA_DIRS` when
+/// set, otherwise the Plasma data directories.
+fn scene_plugin_installed(state: &State) -> bool {
+    match &state.plasma_data_dirs {
+        Some(dirs) => live_scene_plugin_installed_in(dirs),
+        None => live_scene_plugin_installed(),
+    }
 }
 
 fn entry_id(entry: &LibraryEntry) -> String {
@@ -499,6 +540,8 @@ struct LibraryBody {
     path: Option<String>,
     #[serde(rename = "extraLibrary")]
     extra_library: Option<String>,
+    #[serde(rename = "liveScene")]
+    live_scene: bool,
     items: Vec<ItemBody>,
 }
 
