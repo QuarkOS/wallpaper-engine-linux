@@ -83,11 +83,14 @@ fn read_argv(record: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Skip Plasma and record the spawned program. This is the `--video-player`
+/// and `--web-player` override.
 fn players_using(stub: PathBuf) -> Players {
     Players {
         video: stub.clone(),
         web: stub,
         plasma: false,
+        web_plasma: false,
         ..Players::default()
     }
 }

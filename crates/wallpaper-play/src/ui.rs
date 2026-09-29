@@ -35,8 +35,8 @@ struct State {
 ///
 /// `library` is the workshop directory, or `None` when none was found. The
 /// page still loads in that case. `players` chooses how a video or web item
-/// starts. The default video action is a muted Plasma wallpaper. Web playback
-/// uses `xdg-open`.
+/// starts. The default video and web actions are muted Plasma wallpapers.
+/// An explicit web player skips Plasma and opens the file URL.
 pub fn serve(library: Option<PathBuf>, players: Players) -> io::Result<()> {
     let listener = bind_loopback()?;
     let port = listener.local_addr()?.port();

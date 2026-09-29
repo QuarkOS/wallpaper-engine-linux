@@ -1,9 +1,12 @@
-//! KDE Plasma 6 video wallpaper.
+//! KDE Plasma 6 video and web wallpapers.
 //!
 //! Plasma 6.7's `plasma-workspace` `wallpapers/` directory ships `color` and
 //! `image` (the image package also installs `org.kde.slideshow`). It does not
-//! ship a video wallpaper plugin, so this module installs a user-local QML
-//! package and selects it through Plasma Shell scripting.
+//! ship a video or web wallpaper plugin, so this module installs user-local
+//! QML packages and selects one through Plasma Shell scripting.
+//!
+//! The video package and the web package are separate directories. Installing
+//! one writes only that package's files.
 //!
 //! The script is evaluated with `qdbus6`, `qdbus-qt6`, or `qdbus`:
 //! `org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript`.
@@ -24,6 +27,11 @@ use super::{file_url, LaunchError, PlayError, Players};
 /// This is not a stock Plasma id. Plasma 6.7 has no video wallpaper plugin.
 pub const PLASMA_VIDEO_WALLPAPER_PLUGIN: &str = "linux.wallpaper.video";
 
+/// Plugin id for the web wallpaper package.
+///
+/// This is a different directory from [`PLASMA_VIDEO_WALLPAPER_PLUGIN`].
+pub const PLASMA_WEB_WALLPAPER_PLUGIN: &str = "linux.wallpaper.web";
+
 /// Session bus service that owns the Plasma shell script engine.
 pub const PLASMA_DBUS_SERVICE: &str = "org.kde.plasmashell";
 
@@ -35,7 +43,7 @@ pub const PLASMA_DBUS_PATH: &str = "/PlasmaShell";
 /// Plasma 6 still exposes this as `ShellCorona::evaluateScript`.
 pub const PLASMA_DBUS_METHOD: &str = "org.kde.PlasmaShell.evaluateScript";
 
-const PACKAGE: &[(&str, &str)] = &[
+const VIDEO_PACKAGE: &[(&str, &str)] = &[
     (
         "metadata.json",
         include_str!("../plasma/linux.wallpaper.video/metadata.json"),
@@ -51,6 +59,25 @@ const PACKAGE: &[(&str, &str)] = &[
     (
         "contents/ui/config.qml",
         include_str!("../plasma/linux.wallpaper.video/contents/ui/config.qml"),
+    ),
+];
+
+const WEB_PACKAGE: &[(&str, &str)] = &[
+    (
+        "metadata.json",
+        include_str!("../plasma/linux.wallpaper.web/metadata.json"),
+    ),
+    (
+        "contents/config/main.xml",
+        include_str!("../plasma/linux.wallpaper.web/contents/config/main.xml"),
+    ),
+    (
+        "contents/ui/main.qml",
+        include_str!("../plasma/linux.wallpaper.web/contents/ui/main.qml"),
+    ),
+    (
+        "contents/ui/config.qml",
+        include_str!("../plasma/linux.wallpaper.web/contents/ui/config.qml"),
     ),
 ];
 
@@ -86,10 +113,16 @@ pub(crate) fn default_plasmashell_tool() -> PathBuf {
 
 /// Directory the video wallpaper package is copied into.
 pub fn plasma_wallpaper_dir(data_home: &Path) -> PathBuf {
-    data_home
-        .join("plasma")
-        .join("wallpapers")
-        .join(PLASMA_VIDEO_WALLPAPER_PLUGIN)
+    wallpaper_dir(data_home, PLASMA_VIDEO_WALLPAPER_PLUGIN)
+}
+
+/// Directory the web wallpaper package is copied into.
+pub fn plasma_web_wallpaper_dir(data_home: &Path) -> PathBuf {
+    wallpaper_dir(data_home, PLASMA_WEB_WALLPAPER_PLUGIN)
+}
+
+fn wallpaper_dir(data_home: &Path, plugin: &str) -> PathBuf {
+    data_home.join("plasma").join("wallpapers").join(plugin)
 }
 
 /// JavaScript for `org.kde.PlasmaShell.evaluateScript`.
@@ -98,26 +131,63 @@ pub fn plasma_wallpaper_dir(data_home: &Path) -> PathBuf {
 /// as a `file://` URL. `muted` is written to the `Muted` config key. The
 /// default call passes `true`.
 pub fn plasma_wallpaper_script(file: &Path, muted: bool) -> Result<String, PlayError> {
-    let url = js_string(&file_url(file)?);
-    let plugin = js_string(PLASMA_VIDEO_WALLPAPER_PLUGIN);
+    Ok(desktop_script(
+        PLASMA_VIDEO_WALLPAPER_PLUGIN,
+        "VideoFile",
+        &file_url(file)?,
+        muted,
+    ))
+}
+
+/// JavaScript that selects the web wallpaper and loads `url`.
+///
+/// `url` is the page address, normally a `file://` URL. `muted` is written
+/// to the `Muted` config key. The default call passes `true`.
+pub fn plasma_web_wallpaper_script(url: &str, muted: bool) -> String {
+    desktop_script(PLASMA_WEB_WALLPAPER_PLUGIN, "PageUrl", url, muted)
+}
+
+fn desktop_script(plugin_id: &str, config_key: &str, config_value: &str, muted: bool) -> String {
+    let plugin = js_string(plugin_id);
+    let value = js_string(config_value);
     let muted = if muted { "true" } else { "false" };
-    Ok(format!(
+    format!(
         "var allDesktops = desktops();\n\
          for (var i = 0; i < allDesktops.length; i++) {{\n\
              var desktop = allDesktops[i];\n\
              desktop.wallpaperPlugin = {plugin};\n\
              desktop.currentConfigGroup = [\"Wallpaper\", {plugin}, \"General\"];\n\
-             desktop.writeConfig(\"VideoFile\", {url});\n\
+             desktop.writeConfig(\"{config_key}\", {value});\n\
              desktop.writeConfig(\"Muted\", {muted});\n\
              desktop.reloadConfig();\n\
          }}\n"
-    ))
+    )
 }
 
-/// Copy the QML wallpaper package into the user Plasma wallpaper directory.
+/// Copy the video wallpaper package into the user Plasma wallpaper directory.
+///
+/// The web package, when it is already installed beside this one, is left
+/// in place.
 pub fn install_plasma_video_wallpaper(data_home: &Path) -> Result<PathBuf, LaunchError> {
-    let root = plasma_wallpaper_dir(data_home);
-    for (relative, contents) in PACKAGE {
+    install_wallpaper_package(data_home, PLASMA_VIDEO_WALLPAPER_PLUGIN, VIDEO_PACKAGE)
+}
+
+/// Copy the web wallpaper package into the user Plasma wallpaper directory.
+///
+/// The video package, when it is already installed beside this one, is left
+/// in place.
+pub fn install_plasma_web_wallpaper(data_home: &Path) -> Result<PathBuf, LaunchError> {
+    install_wallpaper_package(data_home, PLASMA_WEB_WALLPAPER_PLUGIN, WEB_PACKAGE)
+}
+
+/// Write one wallpaper package. Sibling packages under `wallpapers/` stay.
+fn install_wallpaper_package(
+    data_home: &Path,
+    plugin: &str,
+    package: &[(&str, &str)],
+) -> Result<PathBuf, LaunchError> {
+    let root = wallpaper_dir(data_home, plugin);
+    for (relative, contents) in package {
         let path = root.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|source| LaunchError::PlasmaInstall {
@@ -130,7 +200,7 @@ pub fn install_plasma_video_wallpaper(data_home: &Path) -> Result<PathBuf, Launc
     Ok(root)
 }
 
-/// Install the wallpaper package and ask plasmashell to select it.
+/// Install the video wallpaper package and ask plasmashell to select it.
 ///
 /// This does not spawn the video player. A missing plasmashell tool is
 /// [`LaunchError::MissingPlasmashell`].
@@ -144,7 +214,23 @@ pub(crate) fn launch_plasma_wallpaper(
             message: error.to_string(),
         }
     })?;
-    let program = &players.plasmashell;
+    evaluate_plasma_script(&players.plasmashell, &script)
+}
+
+/// Install the web wallpaper package and ask plasmashell to select it.
+///
+/// This does not spawn [`Players::web`]. A missing plasmashell tool is
+/// [`LaunchError::MissingPlasmashell`].
+pub(crate) fn launch_plasma_web_wallpaper(
+    url: &str,
+    players: &Players,
+) -> Result<Child, LaunchError> {
+    install_plasma_web_wallpaper(&players.plasma_data_home)?;
+    let script = plasma_web_wallpaper_script(url, players.muted);
+    evaluate_plasma_script(&players.plasmashell, &script)
+}
+
+fn evaluate_plasma_script(program: &Path, script: &str) -> Result<Child, LaunchError> {
     Command::new(program)
         .arg(PLASMA_DBUS_SERVICE)
         .arg(PLASMA_DBUS_PATH)

@@ -5,7 +5,9 @@
 //! A video plan is a muted KDE Plasma wallpaper: a user-local QML plugin
 //! loops the file with Qt Multimedia, and Plasma Shell scripting selects that
 //! plugin on every desktop. Pass an explicit video player to spawn `mpv`
-//! instead. A web plan runs `xdg-open` with the `file://` URL. Scene,
+//! instead. A web plan is a muted KDE Plasma wallpaper too: a separate
+//! user-local QML plugin loads the page in Qt WebEngine. Pass an explicit
+//! web player to spawn that program with the `file://` URL instead. Scene,
 //! application, and other unsupported types, and video or web projects whose
 //! media file is missing, are errors from [`plan_playback`]. [`play_first`]
 //! scans a library, skips unsupported entries, and [`launch`]es the first
@@ -34,8 +36,10 @@ pub mod steam_root;
 pub mod ui;
 
 pub use plasma::{
-    install_plasma_video_wallpaper, plasma_wallpaper_dir, plasma_wallpaper_script,
+    install_plasma_video_wallpaper, install_plasma_web_wallpaper, plasma_wallpaper_dir,
+    plasma_wallpaper_script, plasma_web_wallpaper_dir, plasma_web_wallpaper_script,
     PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_VIDEO_WALLPAPER_PLUGIN,
+    PLASMA_WEB_WALLPAPER_PLUGIN,
 };
 
 /// What a desktop player should run for one library entry.
@@ -182,28 +186,37 @@ const MPV_INFINITE_FILE_LOOP: &str = "--loop-file=inf";
 ///
 /// The default video action is a muted Plasma wallpaper. `video` is the
 /// program used only when [`Self::plasma`] is false: an explicit override
-/// such as `--video-player`. That override gets `mpv` arguments. Web playback
-/// stays `xdg-open`.
+/// such as `--video-player`. That override gets `mpv` arguments. The default
+/// web action is a muted Plasma wallpaper as well. `web` is the program used
+/// only when [`Self::web_plasma`] is false.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Players {
     /// Video player used when [`Self::plasma`] is false. Default: `mpv`.
     pub video: PathBuf,
-    /// Program that opens a web wallpaper. Default: `xdg-open`.
+    /// Program that opens a web wallpaper when [`Self::web_plasma`] is false.
+    /// Default: `xdg-open`.
     pub web: PathBuf,
     /// When true, a video plan is installed and selected as a Plasma wallpaper.
     ///
     /// The default is true. An explicit video player sets this to false and
-    /// spawns [`Self::video`] instead.
+    /// spawns [`Self::video`] instead. Clearing this flag does not change
+    /// [`Self::web_plasma`].
     pub plasma: bool,
+    /// When true, a web plan is installed and selected as a Plasma wallpaper.
+    ///
+    /// The default is true. An explicit web player sets this to false and
+    /// spawns [`Self::web`] instead. [`Self::plasma`] does not change this
+    /// flag.
+    pub web_plasma: bool,
     /// `qdbus6` or `qdbus`, used to call [`PLASMA_DBUS_METHOD`].
     pub plasmashell: PathBuf,
     /// `$XDG_DATA_HOME` or `~/.local/share`. The wallpaper package is copied
     /// to `plasma/wallpapers/` inside this directory.
     pub plasma_data_home: PathBuf,
-    /// Mute the Plasma video wallpaper. The default is true.
+    /// Mute the Plasma video or web wallpaper. The default is true.
     ///
-    /// Set this to false to pass sound on. The explicit `mpv` override does
-    /// not read this flag.
+    /// Set this to false to pass sound on. An explicit `mpv` or web player
+    /// override does not read this flag.
     pub muted: bool,
 }
 
@@ -213,6 +226,7 @@ impl Default for Players {
             video: PathBuf::from("mpv"),
             web: PathBuf::from("xdg-open"),
             plasma: true,
+            web_plasma: true,
             plasmashell: plasma::default_plasmashell_tool(),
             plasma_data_home: plasma::default_plasma_data_home(),
             muted: true,
@@ -229,7 +243,7 @@ pub enum LaunchError {
     Spawn { program: PathBuf, source: io::Error },
     /// The Plasma shell scripting tool (`qdbus6` or `qdbus`) was not found.
     ///
-    /// No video player is started.
+    /// No video player and no web browser are started.
     MissingPlasmashell { program: PathBuf, source: io::Error },
     /// The user-local wallpaper package could not be written.
     PlasmaInstall { path: PathBuf, source: io::Error },
@@ -293,16 +307,24 @@ impl std::error::Error for LaunchError {
 /// which is `mpv`'s infinite loop of that file. When `loops` is clear, the
 /// only argument is the media path.
 ///
-/// A web plan spawns `players.web` with the file URL as its only argument.
+/// A web plan with [`Players::web_plasma`] set (the default) installs the
+/// user-local web wallpaper plugin and runs the same plasmashell tool. That
+/// path does not spawn [`Players::web`]. When `web_plasma` is clear, a web
+/// plan spawns `players.web` with the file URL as its only argument.
 ///
 /// The returned [`Child`] is still running. A missing executable is
 /// [`LaunchError::MissingPlayer`], or [`LaunchError::MissingPlasmashell`]
-/// for the Plasma path.
+/// for either Plasma path. A missing plasmashell tool does not fall back to
+/// `mpv` or `xdg-open`.
 pub fn launch(plan: &PlayPlan, players: &Players) -> Result<Child, LaunchError> {
-    if let PlayPlan::Video { file, .. } = plan {
-        if players.plasma {
+    match plan {
+        PlayPlan::Video { file, .. } if players.plasma => {
             return plasma::launch_plasma_wallpaper(file, players);
         }
+        PlayPlan::Web { url } if players.web_plasma => {
+            return plasma::launch_plasma_web_wallpaper(url, players);
+        }
+        _ => {}
     }
 
     let program = match plan {
@@ -377,8 +399,9 @@ impl std::error::Error for PlayFirstError {
 /// directory path order. Scene, application, and other unsupported entries
 /// are skipped. The first video entry is started with [`launch`]: a muted
 /// Plasma wallpaper of the resolved media file, unless `players.plasma` is
-/// clear. The first web entry, when no video sorts earlier, is started with
-/// the file URL. Later entries are left alone.
+/// clear. The first web entry, when no video sorts earlier, is a muted
+/// Plasma wallpaper of the file URL, unless `players.web_plasma` is clear.
+/// Later entries are left alone.
 ///
 /// A library whose entries are all unsupported, including a library of only
 /// scene projects, returns [`PlayFirstError::NothingPlayable`] and starts no

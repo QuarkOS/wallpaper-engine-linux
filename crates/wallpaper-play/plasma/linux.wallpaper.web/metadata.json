@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "wallpaper"
+            }
+        ],
+        "Category": "",
+        "Description": "Show a web page behind the desktop icons",
+        "Icon": "text-html",
+        "Id": "linux.wallpaper.web",
+        "License": "MIT",
+        "Name": "Web",
+        "Version": "1",
+        "Website": ""
+    },
+    "X-KDE-ParentApp": "org.kde.plasmashell",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
