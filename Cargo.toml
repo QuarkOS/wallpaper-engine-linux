@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/wallpaper-import", "crates/wallpaper-play"]
+members = ["crates/wallpaper-import", "crates/wallpaper-play", "crates/wallpaper-desktop"]

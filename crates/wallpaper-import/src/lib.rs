@@ -1,16 +1,18 @@
 //! Read Wallpaper Engine project directories the user already owns.
 //!
 //! Wallpaper Engine describes each project with a `project.json` file. The
-//! public fields this crate uses are `type`, `file`, and `title`. Video and
-//! web projects become playable variants. Scene, application, and any other
-//! type become [`Wallpaper::Unsupported`].
+//! public fields this crate uses are `type`, `file`, `title`, and the optional
+//! `preview`. Video and web projects become playable variants. Scene,
+//! application, and any other type become [`Wallpaper::Unsupported`].
 //!
 //! [`load_wallpaper`] reads one project directory. [`scan_library`] walks the
 //! immediate children of a library root, such as a Steam workshop folder, and
 //! returns each project that loads. [`resolve_media`] joins a video or web
 //! entry's project directory with its relative `file` and returns that path
-//! when the file is on disk inside the project. [`workshop_dir`] is that
-//! library under a Steam root: `steamapps/workshop/content/431960`.
+//! when the file is on disk inside the project. [`select_preview`] is the
+//! optional preview file when `preview` names an image or video that stays
+//! inside the project. [`workshop_dir`] is that library under a Steam root:
+//! `steamapps/workshop/content/431960`.
 
 use std::fmt;
 use std::fs;
@@ -18,6 +20,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
+use serde::Deserializer;
 
 /// A wallpaper loaded from a project directory.
 ///
@@ -29,6 +32,36 @@ pub enum Wallpaper {
     Video { file: String, title: String },
     Web { file: String, title: String },
     Unsupported { kind: String },
+}
+
+/// Whether a project preview file is an image or a video.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewKind {
+    /// `png`, `jpg`, `jpeg`, `gif`, `webp`, or `bmp`.
+    Image,
+    /// `mp4`, `webm`, `ogv`, `mov`, `m4v`, or `mkv`.
+    Video,
+}
+
+impl PreviewKind {
+    /// `"image"` or `"video"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PreviewKind::Image => "image",
+            PreviewKind::Video => "video",
+        }
+    }
+}
+
+/// A preview file that exists inside a project directory.
+///
+/// `file` is the project-relative path from `project.json`, trimmed. `path`
+/// is that file joined onto the project directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedPreview {
+    pub file: String,
+    pub path: PathBuf,
+    pub kind: PreviewKind,
 }
 
 /// A project directory found under a library root.
@@ -127,6 +160,22 @@ struct ProjectFile {
     kind: Option<String>,
     file: Option<String>,
     title: Option<String>,
+    /// Optional. A non-string value is ignored so classification still works.
+    #[serde(default, deserialize_with = "optional_string")]
+    preview: Option<String>,
+}
+
+/// `preview` is optional. A string is kept. Any other JSON value becomes `None`
+/// so a non-string preview does not reject the rest of `project.json`.
+fn optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::String(text) => Some(text),
+        _ => None,
+    })
 }
 
 /// Load `dir/project.json` into a [`Wallpaper`].
@@ -309,6 +358,64 @@ fn relative_file_stays_inside(file: &Path) -> bool {
     }
 
     true
+}
+
+/// The preview named by `project.json`, when it is an image or video file inside the project.
+///
+/// Returns [`Ok`]`(`[`None`]`)` when `preview` is absent, blank, not an image
+/// or video extension, absolute, climbs out of the project with `..`, names a
+/// missing file, or is a symlink whose target leaves the project. Callers
+/// should show no preview in those cases. `directory` must be a directory that
+/// has a readable `project.json`.
+pub fn select_preview(directory: impl AsRef<Path>) -> Result<Option<SelectedPreview>, ImportError> {
+    let directory = directory.as_ref();
+    if !directory.is_dir() {
+        return Err(ImportError::NotADirectory(directory.to_path_buf()));
+    }
+
+    let path = directory.join("project.json");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(ImportError::MissingProjectJson(path));
+        }
+        Err(source) => return Err(ImportError::Io { path, source }),
+    };
+    let project: ProjectFile =
+        serde_json::from_str(&text).map_err(|source| ImportError::Json { path, source })?;
+
+    Ok(preview_from_field(directory, project.preview))
+}
+
+fn preview_from_field(directory: &Path, preview: Option<String>) -> Option<SelectedPreview> {
+    let file = preview
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let kind = preview_kind(&file)?;
+    if !relative_file_stays_inside(Path::new(&file)) {
+        return None;
+    }
+
+    let path = directory.join(&file);
+    if !path.is_file() {
+        return None;
+    }
+    match canonical_file_stays_inside(directory, &path) {
+        Ok(true) => Some(SelectedPreview { file, path, kind }),
+        _ => None,
+    }
+}
+
+fn preview_kind(file: &str) -> Option<PreviewKind> {
+    let extension = Path::new(file)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())?;
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Some(PreviewKind::Image),
+        "mp4" | "webm" | "ogv" | "mov" | "m4v" | "mkv" => Some(PreviewKind::Video),
+        _ => None,
+    }
 }
 
 /// The opened file's canonical path is still inside the canonical project directory.
