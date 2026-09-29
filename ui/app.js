@@ -1,6 +1,13 @@
 const statusEl = document.querySelector("#status");
 const libraryEl = document.querySelector("#library");
 const errorEl = document.querySelector("#error");
+const rescanEl = document.querySelector("#rescan");
+const addFolderEl = document.querySelector("#add-folder");
+const extraPathEl = document.querySelector("#extra-path");
+const autostartEl = document.querySelector("#autostart");
+const autostartPromptEl = document.querySelector("#autostart-prompt");
+const autostartYesEl = document.querySelector("#autostart-yes");
+const autostartNoEl = document.querySelector("#autostart-no");
 
 const EMPTY_LIBRARY = "No workshop items found.";
 
@@ -9,9 +16,13 @@ function hideError() {
   errorEl.textContent = "";
 }
 
-function showPlayError(id) {
+function showError(message) {
   errorEl.hidden = false;
-  errorEl.textContent = "Could not play " + id + ".";
+  errorEl.textContent = message;
+}
+
+function showPlayError(id) {
+  showError("Could not play " + id + ".");
 }
 
 function emptyLibrary() {
@@ -23,6 +34,33 @@ function emptyLibrary() {
 
 function playableType(type) {
   return type === "video" || type === "web";
+}
+
+function renderPreview(item) {
+  const preview = item.preview;
+  if (!preview || typeof preview.url !== "string" || preview.url === "") {
+    return null;
+  }
+  let media = null;
+  if (preview.kind === "video") {
+    media = document.createElement("video");
+    media.muted = true;
+    media.loop = true;
+    media.autoplay = true;
+    media.playsInline = true;
+  } else if (preview.kind === "image") {
+    media = document.createElement("img");
+    media.alt = "";
+  }
+  if (!media) {
+    return null;
+  }
+  media.className = "preview";
+  media.addEventListener("error", function () {
+    media.remove();
+  });
+  media.src = preview.url;
+  return media;
 }
 
 function renderCard(item) {
@@ -46,6 +84,10 @@ function renderCard(item) {
     button.disabled = true;
   }
 
+  const preview = renderPreview(item);
+  if (preview) {
+    card.append(preview);
+  }
   card.append(title, meta, button);
   return card;
 }
@@ -82,6 +124,21 @@ libraryEl.addEventListener("click", (event) => {
   play(button.dataset.id, button);
 });
 
+function libraryStatus(payload) {
+  const steam = payload.found && payload.path ? payload.path : "";
+  const extra = typeof payload.extraLibrary === "string" ? payload.extraLibrary : "";
+  if (steam && extra) {
+    return "Library found at " + steam + " and " + extra;
+  }
+  if (steam) {
+    return "Library found at " + steam;
+  }
+  if (extra) {
+    return "Library found at " + extra;
+  }
+  return "";
+}
+
 async function loadLibrary() {
   hideError();
   let response;
@@ -107,13 +164,14 @@ async function loadLibrary() {
     return;
   }
 
-  if (!payload.found || !payload.path) {
+  const status = libraryStatus(payload);
+  if (!status) {
     statusEl.textContent = "No workshop library found.";
     emptyLibrary();
     return;
   }
 
-  statusEl.textContent = "Library found at " + payload.path;
+  statusEl.textContent = status;
   const items = Array.isArray(payload.items) ? payload.items : [];
   if (items.length === 0) {
     emptyLibrary();
@@ -122,4 +180,100 @@ async function loadLibrary() {
   libraryEl.replaceChildren(...items.map(renderCard));
 }
 
+async function addFolder(path) {
+  hideError();
+  let response;
+  try {
+    response = await fetch("/api/library/extra", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path }),
+    });
+  } catch (error) {
+    showError("Could not add that folder.");
+    return;
+  }
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = {};
+  }
+  if (!response.ok || !payload.ok) {
+    showError(payload.error || "Could not add that folder.");
+    return;
+  }
+  extraPathEl.value = "";
+  await loadLibrary();
+}
+
+async function saveAutostart(enabled) {
+  hideError();
+  let response;
+  try {
+    response = await fetch("/api/autostart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: enabled }),
+    });
+  } catch (error) {
+    showError("Could not save the login setting.");
+    return;
+  }
+  if (!response.ok) {
+    showError("Could not save the login setting.");
+    return;
+  }
+  autostartEl.checked = enabled;
+  autostartPromptEl.hidden = true;
+}
+
+async function loadSettings() {
+  let response;
+  try {
+    response = await fetch("/api/settings");
+  } catch (error) {
+    return;
+  }
+  if (!response.ok) {
+    return;
+  }
+  let settings;
+  try {
+    settings = await response.json();
+  } catch (error) {
+    return;
+  }
+  autostartEl.checked = !!settings.autostart;
+  if (!settings.autostartAsked) {
+    autostartPromptEl.hidden = false;
+  }
+}
+
+rescanEl.addEventListener("click", () => {
+  loadLibrary();
+});
+
+addFolderEl.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const path = extraPathEl.value.trim();
+  if (!path) {
+    return;
+  }
+  addFolder(path);
+});
+
+autostartEl.addEventListener("change", () => {
+  saveAutostart(autostartEl.checked);
+});
+
+autostartYesEl.addEventListener("click", () => {
+  saveAutostart(true);
+});
+
+autostartNoEl.addEventListener("click", () => {
+  saveAutostart(false);
+});
+
+loadSettings();
 loadLibrary();

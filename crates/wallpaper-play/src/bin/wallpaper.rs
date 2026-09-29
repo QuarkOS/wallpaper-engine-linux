@@ -4,6 +4,7 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitCode, ExitStatus};
 
@@ -19,6 +20,8 @@ Usage: wallpaper list [--steam-root DIR]
                         [--video-player PATH] [--web-player PATH]
        wallpaper ui [--steam-root DIR] [--sound] [--plasmashell PATH]
                       [--video-player PATH] [--web-player PATH]
+       wallpaper desktop [--steam-root DIR] [--sound] [--plasmashell PATH]
+                           [--video-player PATH] [--web-player PATH]
 
 list prints one workshop item per line: id, type, and title, sorted by id.
 play ID sets that video or web item as a KDE Plasma wallpaper.
@@ -45,7 +48,10 @@ Without --steam-root, search ~/.steam/steam, ~/.local/share/Steam, and
 steamapps/workshop/content/431960, then for libraries named in
 steamapps/libraryfolders.vdf. The first match is used.
 --steam-root DIR uses that root and its libraryfolders.vdf, and does not
-search HOME.";
+search HOME.
+desktop opens the same library page in a window. Without a display it
+serves that page and does not open a window. The page can add one extra
+folder of Wallpaper Engine projects and choose whether to start on login.";
 
 fn main() -> ExitCode {
     match run(env::args().skip(1)) {
@@ -76,10 +82,14 @@ enum Command {
         plasmashell: Option<PathBuf>,
         sound: bool,
     },
+    Desktop {
+        args: Vec<String>,
+    },
 }
 
 fn run(args: impl IntoIterator<Item = String>) -> Result<(), CliError> {
     match parse_args(args)? {
+        Command::Desktop { args } => run_desktop(&args),
         Command::List { steam_root } => {
             let library = resolve_library(steam_root)?;
             list_projects(&library)
@@ -122,6 +132,31 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+/// Replace this process with the desktop window program.
+///
+/// The desktop crate cannot depend back on this binary, so `wallpaper desktop`
+/// execs the sibling `wallpaper-desktop` built next to it.
+fn run_desktop(args: &[String]) -> Result<(), CliError> {
+    let program = desktop_program();
+    let error = std::process::Command::new(&program).args(args).exec();
+    Err(CliError::DesktopSpawn {
+        program,
+        source: error,
+    })
+}
+
+fn desktop_program() -> PathBuf {
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("wallpaper-desktop");
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("wallpaper-desktop")
 }
 
 fn players_from_flags(
@@ -271,6 +306,11 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
         Some("list") => "list",
         Some("play") => "play",
         Some("ui") => "ui",
+        Some("desktop") => {
+            return Ok(Command::Desktop {
+                args: args.collect(),
+            });
+        }
         Some(other) => {
             return Err(CliError::Usage(format!(
                 "unknown command `{other}`\n{USAGE}"
@@ -356,6 +396,7 @@ enum CliError {
     Wait(io::Error),
     PlayerExit(ExitStatus),
     Serve(io::Error),
+    DesktopSpawn { program: PathBuf, source: io::Error },
 }
 
 impl From<SteamRootError> for CliError {
@@ -404,6 +445,9 @@ impl fmt::Display for CliError {
             CliError::Wait(source) => write!(f, "failed to wait for player: {source}"),
             CliError::PlayerExit(status) => write!(f, "player exited with {status}"),
             CliError::Serve(source) => write!(f, "failed to serve the library page: {source}"),
+            CliError::DesktopSpawn { program, source } => {
+                write!(f, "failed to start {}: {source}", program.display())
+            }
         }
     }
 }
@@ -418,6 +462,7 @@ impl std::error::Error for CliError {
             CliError::Launch(source) => Some(source),
             CliError::Wait(source) => Some(source),
             CliError::Serve(source) => Some(source),
+            CliError::DesktopSpawn { source, .. } => Some(source),
             _ => None,
         }
     }
