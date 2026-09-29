@@ -34,6 +34,24 @@ This project is not Wallpaper Engine. It is not affiliated with Wallpaper Engine
 
    If this prints nothing, add `export PATH="$HOME/.cargo/bin:$PATH"` to `~/.bashrc`. Open a new terminal.
 
+## Fedora RPM
+
+Build an RPM from this repository, then install it. The package provides `wallpaper`, `wallpaper-desktop`, the monochrome stylesheet, and a menu entry that runs `wallpaper desktop`.
+
+```sh
+sudo dnf install rpm-build rust cargo gcc pkgconf-pkg-config gtk3-devel webkit2gtk4.1-devel curl ca-certificates
+mkdir -p "$HOME/rpmbuild/SOURCES"
+tar -czf "$HOME/rpmbuild/SOURCES/wallpaper-engine-linux-0.1.0.tar.gz" \
+  --exclude target \
+  --exclude .git \
+  --transform 's,^\./,wallpaper-engine-linux-0.1.0/,' \
+  .
+rpmbuild -bb packaging/fedora/wallpaper-engine-linux.spec
+sudo dnf install "$HOME/rpmbuild/RPMS/$(uname -m)/wallpaper-engine-linux-0.1.0-1"*.rpm
+```
+
+If Fedora's `cargo` is older than Rust 1.98.1, the spec installs that toolchain with rustup while it builds.
+
 ## Install on other Linux distributions
 
 1. Install Rust with your package manager or with [rustup](https://rustup.rs).

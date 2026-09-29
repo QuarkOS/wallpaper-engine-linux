@@ -490,21 +490,7 @@ fn read_settings(state: &State) -> Settings {
 }
 
 fn stylesheet() -> String {
-    let mut paths = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/styles.css"),
-        PathBuf::from("ui/styles.css"),
-    ];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("ui/styles.css"));
-        }
-    }
-    for path in paths {
-        if let Ok(text) = fs::read_to_string(path) {
-            return text;
-        }
-    }
-    String::new()
+    wallpaper_play::ui::library_stylesheet()
 }
 
 #[derive(Serialize)]

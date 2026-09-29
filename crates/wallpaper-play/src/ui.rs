@@ -9,6 +9,7 @@
 //! does not start a player.
 
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -243,22 +244,123 @@ fn title_from_project_json(directory: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn stylesheet() -> String {
-    let mut paths = vec![
+/// Share directory an RPM uses for `ui/styles.css`.
+///
+/// `WALLPAPER_DATA_DIR` replaces this directory so a test can point at a
+/// temp root. An empty value keeps the default.
+const DEFAULT_DATA_DIR: &str = "/usr/share/wallpaper-engine-linux";
+
+fn data_dir_from(override_dir: Option<&OsStr>) -> PathBuf {
+    match override_dir {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from(DEFAULT_DATA_DIR),
+    }
+}
+
+fn installed_data_dir() -> PathBuf {
+    data_dir_from(env::var_os("WALLPAPER_DATA_DIR").as_deref())
+}
+
+/// CSS for the library page.
+///
+/// Search order: the copy next to the crate sources, `ui/styles.css` in the
+/// working directory, `ui/styles.css` beside the executable, then
+/// `ui/styles.css` in the installed data directory
+/// (`/usr/share/wallpaper-engine-linux`, or `WALLPAPER_DATA_DIR`).
+pub fn library_stylesheet() -> String {
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    read_stylesheet(&stylesheet_candidates(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/styles.css"),
         PathBuf::from("ui/styles.css"),
-    ];
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("ui/styles.css"));
-        }
+        exe_dir,
+        &installed_data_dir(),
+    ))
+}
+
+fn stylesheet_candidates(
+    manifest_css: PathBuf,
+    cwd_css: PathBuf,
+    exe_dir: Option<PathBuf>,
+    data_dir: &Path,
+) -> Vec<PathBuf> {
+    let mut paths = vec![manifest_css, cwd_css];
+    if let Some(dir) = exe_dir {
+        paths.push(dir.join("ui/styles.css"));
     }
+    paths.push(data_dir.join("ui/styles.css"));
+    paths
+}
+
+fn read_stylesheet(paths: &[PathBuf]) -> String {
     for path in paths {
         if let Ok(text) = fs::read_to_string(path) {
             return text;
         }
     }
     String::new()
+}
+
+fn stylesheet() -> String {
+    library_stylesheet()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::{data_dir_from, read_stylesheet, stylesheet_candidates};
+
+    #[test]
+    fn stylesheet_lookup_finds_usr_share_file_when_other_candidates_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "wallpaper-stylesheet-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let data_dir = root.join("usr/share/wallpaper-engine-linux");
+        let installed = data_dir.join("ui/styles.css");
+        fs::create_dir_all(installed.parent().expect("ui parent")).expect("mkdir");
+        let marker = "/* share stylesheet */\n";
+        fs::write(&installed, marker).expect("write css");
+
+        let manifest = root.join("crate/ui/styles.css");
+        let cwd = root.join("cwd/ui/styles.css");
+        let exe_dir = root.join("exe");
+        assert!(!manifest.exists());
+        assert!(!cwd.exists());
+        assert!(!exe_dir.join("ui/styles.css").exists());
+
+        let paths = stylesheet_candidates(manifest, cwd, Some(exe_dir), &data_dir);
+        assert_eq!(
+            paths.last().map(PathBuf::as_path),
+            Some(installed.as_path()),
+            "the last candidate is the /usr/share stylesheet"
+        );
+        assert_eq!(read_stylesheet(&paths), marker);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn data_dir_override_replaces_the_default_share_directory() {
+        assert_eq!(
+            data_dir_from(None),
+            PathBuf::from("/usr/share/wallpaper-engine-linux")
+        );
+        assert_eq!(
+            data_dir_from(Some(OsStr::new(""))),
+            PathBuf::from("/usr/share/wallpaper-engine-linux")
+        );
+        let custom = Path::new("/tmp/wallpaper-data-root");
+        assert_eq!(data_dir_from(Some(custom.as_os_str())), custom);
+    }
 }
 
 #[derive(Serialize)]

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpapers
+GenericName=Wallpaper library
+Comment=Play workshop wallpapers you already own
+Exec=wallpaper desktop
+Terminal=false
+Categories=Utility;
+Keywords=wallpaper;kde;plasma;
+StartupNotify=true
+Icon=preferences-desktop-wallpaper
