@@ -1,0 +1,15 @@
+[package]
+name = "wallpaper-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Open the workshop library in a native window."
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tao = "=0.36.0"
+wallpaper-import = { path = "../wallpaper-import" }
+wallpaper-play = { path = "../wallpaper-play" }
+wry = "=0.56.1"
