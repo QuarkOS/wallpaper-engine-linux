@@ -7,4 +7,9 @@ license = "MIT"
 publish = false
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 wallpaper-import = { path = "../wallpaper-import" }
+
+[dev-dependencies]
+serde_json = "1"

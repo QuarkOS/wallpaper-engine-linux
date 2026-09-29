@@ -16,11 +16,15 @@ use wallpaper_play::{
 const USAGE: &str = "\
 Usage: wallpaper list [--steam-root DIR]
        wallpaper play [ID] [--steam-root DIR] [--video-player PATH] [--web-player PATH]
+       wallpaper ui [--steam-root DIR] [--video-player PATH] [--web-player PATH]
 
 list prints one workshop item per line: id, type, and title, sorted by id.
 play ID launches that video or web item. A scene item, or an id that is not
 in the library, exits with an error and does not start a player.
 play with no ID launches the first video or web wallpaper in sorted path order.
+ui binds to 127.0.0.1, prints the page URL, and serves the workshop library.
+The page plays a video or web item. A scene item, or an id that is not in the
+library, is an error and does not start a player.
 Without --steam-root, search ~/.steam/steam, ~/.local/share/Steam, and
 ~/.steam/root under HOME. Each root is checked for
 steamapps/workshop/content/431960, then for libraries named in
@@ -45,6 +49,11 @@ enum Command {
     },
     Play {
         id: Option<String>,
+        steam_root: Option<PathBuf>,
+        video_player: Option<PathBuf>,
+        web_player: Option<PathBuf>,
+    },
+    Ui {
         steam_root: Option<PathBuf>,
         video_player: Option<PathBuf>,
         web_player: Option<PathBuf>,
@@ -81,6 +90,26 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), CliError> {
             } else {
                 Err(CliError::PlayerExit(status))
             }
+        }
+        Command::Ui {
+            steam_root,
+            video_player,
+            web_player,
+        } => {
+            let library = match resolve_library(steam_root) {
+                Ok(path) => Some(path),
+                Err(CliError::MissingHome | CliError::SteamRoot(_) | CliError::Workshop(_)) => None,
+                Err(error) => return Err(error),
+            };
+            let mut players = Players::default();
+            if let Some(video) = video_player {
+                players.video = video;
+            }
+            if let Some(web) = web_player {
+                players.web = web;
+            }
+            wallpaper_play::ui::serve(library, players).map_err(CliError::Serve)?;
+            Ok(())
         }
     }
 }
@@ -207,6 +236,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
     let command = match args.next().as_deref() {
         Some("list") => "list",
         Some("play") => "play",
+        Some("ui") => "ui",
         Some(other) => {
             return Err(CliError::Usage(format!(
                 "unknown command `{other}`\n{USAGE}"
@@ -229,8 +259,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
                 .ok_or_else(|| CliError::Usage(format!("missing value for --{flag}\n{USAGE}")))?;
             match (command, flag) {
                 (_, "steam-root") => steam_root = Some(PathBuf::from(value)),
-                ("play", "video-player") => video_player = Some(PathBuf::from(value)),
-                ("play", "web-player") => web_player = Some(PathBuf::from(value)),
+                ("play" | "ui", "video-player") => video_player = Some(PathBuf::from(value)),
+                ("play" | "ui", "web-player") => web_player = Some(PathBuf::from(value)),
                 _ => {
                     return Err(CliError::Usage(format!(
                         "unknown argument `--{flag}`\n{USAGE}"
@@ -251,6 +281,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
 
     if command == "list" {
         Ok(Command::List { steam_root })
+    } else if command == "ui" {
+        Ok(Command::Ui {
+            steam_root,
+            video_player,
+            web_player,
+        })
     } else {
         Ok(Command::Play {
             id,
@@ -273,6 +309,7 @@ enum CliError {
     UnknownId(String),
     Wait(io::Error),
     PlayerExit(ExitStatus),
+    Serve(io::Error),
 }
 
 impl From<SteamRootError> for CliError {
@@ -320,6 +357,7 @@ impl fmt::Display for CliError {
             CliError::UnknownId(id) => write!(f, "unknown wallpaper id `{id}`"),
             CliError::Wait(source) => write!(f, "failed to wait for player: {source}"),
             CliError::PlayerExit(status) => write!(f, "player exited with {status}"),
+            CliError::Serve(source) => write!(f, "failed to serve the library page: {source}"),
         }
     }
 }
@@ -333,6 +371,7 @@ impl std::error::Error for CliError {
             CliError::Item(source) => Some(source),
             CliError::Launch(source) => Some(source),
             CliError::Wait(source) => Some(source),
+            CliError::Serve(source) => Some(source),
             _ => None,
         }
     }

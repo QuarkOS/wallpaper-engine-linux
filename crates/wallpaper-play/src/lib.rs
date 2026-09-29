@@ -10,6 +10,8 @@
 //! video or web wallpaper. This crate does not render wallpapers.
 //!
 //! The `wallpaper` command calls [`play_first`] on a workshop library.
+//! `wallpaper ui` serves a local page that lists the same library and plays
+//! one video or web item. Scene items are refused and do not start a player.
 //! `wallpaper play --steam-root DIR` uses that Steam root, then any extra
 //! library named in its `steamapps/libraryfolders.vdf`. Without
 //! `--steam-root`, [`steam_root::find_steam_root`] checks `~/.steam/steam`,
@@ -26,6 +28,7 @@ use std::process::{Child, Command};
 use wallpaper_import::{resolve_media, scan_library, ImportError, LibraryEntry, Wallpaper};
 
 pub mod steam_root;
+pub mod ui;
 
 /// What a desktop player should run for one library entry.
 ///
