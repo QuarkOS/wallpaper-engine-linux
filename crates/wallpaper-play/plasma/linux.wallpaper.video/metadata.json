@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "wallpaper"
+            }
+        ],
+        "Category": "",
+        "Description": "Loop a video file behind the desktop icons",
+        "Icon": "video-x-generic",
+        "Id": "linux.wallpaper.video",
+        "License": "MIT",
+        "Name": "Video",
+        "Version": "1",
+        "Website": ""
+    },
+    "X-KDE-ParentApp": "org.kde.plasmashell",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

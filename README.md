@@ -1,6 +1,6 @@
 # Install wallpaper on Linux
 
-`wallpaper` plays video and web Wallpaper Engine workshop items that you already own. It reads the files Steam downloaded to your disk. It hands each item to `mpv` or `xdg-open`.
+`wallpaper` plays video and web Wallpaper Engine workshop items that you already own. It reads the files Steam downloaded to your disk. A video item becomes a muted KDE Plasma wallpaper behind the desktop icons. A web item is opened with `xdg-open`.
 
 This project is not Wallpaper Engine. It is not affiliated with Wallpaper Engine or Valve. It does not download workshop content. Scene wallpapers do not play.
 
@@ -12,11 +12,13 @@ This project is not Wallpaper Engine. It is not affiliated with Wallpaper Engine
 
 ## Install on Fedora
 
-1. Install the build tools and players:
+1. Install the build tools, the Plasma shell scripting tool, and Qt Multimedia:
 
    ```sh
-   sudo dnf install cargo rust gcc mpv xdg-utils
+   sudo dnf install cargo rust gcc qt6-qttools qt6-qtmultimedia xdg-utils
    ```
+
+   `mpv` is only needed when you pass `--video-player`.
 
 2. Build and install the command from the repository root:
 
@@ -35,18 +37,14 @@ This project is not Wallpaper Engine. It is not affiliated with Wallpaper Engine
 ## Install on other Linux distributions
 
 1. Install Rust with your package manager or with [rustup](https://rustup.rs).
-2. Install `mpv` and `xdg-utils`.
+2. Install Qt 6 Multimedia, `xdg-utils`, and a Qt 6 `qdbus` tool (`qdbus6`, `qdbus-qt6`, or `qdbus`). Install `mpv` only if you want `--video-player`.
 
-   On Debian and Ubuntu:
-
-   ```sh
-   sudo apt install cargo mpv xdg-utils
-   ```
+   On Debian and Ubuntu, the Qt 6 packages are `qt6-multimedia` and the package that provides `qdbus6`.
 
    On Arch Linux:
 
    ```sh
-   sudo pacman -S rust mpv xdg-utils
+   sudo pacman -S rust qt6-tools qt6-multimedia xdg-utils
    ```
 
 3. Follow steps 2 and 3 of the Fedora section.
@@ -90,12 +88,21 @@ wallpaper list --steam-root ~/.var/app/com.valvesoftware.Steam/.local/share/Stea
 
 `--steam-root` reads that root and its `libraryfolders.vdf`. It skips the folders under `HOME`.
 
-## Use a different player
+## Video wallpapers
 
-`play` uses `mpv` for video items and `xdg-open` for web items. Pass a path to override either one:
+On KDE Plasma 6, `play` installs a small video wallpaper plugin into `~/.local/share/plasma/wallpapers/linux.wallpaper.video` (or `$XDG_DATA_HOME/plasma/wallpapers/linux.wallpaper.video`) and selects it with Plasma Shell scripting:
 
 ```sh
-wallpaper play 1234567890 --video-player /usr/bin/vlc
+qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript
+```
+
+Plasma 6.7 does not ship a stock video wallpaper plugin. The installed plugin loops the file with Qt Multimedia. The script sets that plugin on every desktop `desktops()` returns. Audio is muted. Pass `--sound` to leave it on.
+
+`--video-player PATH` skips the Plasma wallpaper and runs that program with `mpv` arguments instead. `--web-player` still defaults to `xdg-open`.
+
+```sh
+wallpaper play 1234567890 --sound
+wallpaper play 1234567890 --video-player /usr/bin/mpv
 wallpaper play 1234567890 --web-player /usr/bin/firefox
 ```
 

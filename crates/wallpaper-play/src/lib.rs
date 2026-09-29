@@ -1,13 +1,15 @@
 //! Turn a resolved video or web wallpaper into a play plan and start it.
 //!
 //! A desktop player scans a library with [`wallpaper_import::scan_library`],
-//! then calls [`plan_playback`] on each entry. [`launch`] starts that plan as
-//! a process. A video plan runs `mpv` with an infinite loop of the resolved
-//! file. A web plan runs `xdg-open` with the `file://` URL. Scene,
+//! then calls [`plan_playback`] on each entry. [`launch`] starts that plan.
+//! A video plan is a muted KDE Plasma wallpaper: a user-local QML plugin
+//! loops the file with Qt Multimedia, and Plasma Shell scripting selects that
+//! plugin on every desktop. Pass an explicit video player to spawn `mpv`
+//! instead. A web plan runs `xdg-open` with the `file://` URL. Scene,
 //! application, and other unsupported types, and video or web projects whose
 //! media file is missing, are errors from [`plan_playback`]. [`play_first`]
 //! scans a library, skips unsupported entries, and [`launch`]es the first
-//! video or web wallpaper. This crate does not render wallpapers.
+//! video or web wallpaper. This crate does not render scene wallpapers.
 //!
 //! The `wallpaper` command calls [`play_first`] on a workshop library.
 //! `wallpaper ui` serves a local page that lists the same library and plays
@@ -27,8 +29,14 @@ use std::process::{Child, Command};
 
 use wallpaper_import::{resolve_media, scan_library, ImportError, LibraryEntry, Wallpaper};
 
+mod plasma;
 pub mod steam_root;
 pub mod ui;
+
+pub use plasma::{
+    install_plasma_video_wallpaper, plasma_wallpaper_dir, plasma_wallpaper_script,
+    PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_VIDEO_WALLPAPER_PLUGIN,
+};
 
 /// What a desktop player should run for one library entry.
 ///
@@ -172,15 +180,31 @@ const MPV_INFINITE_FILE_LOOP: &str = "--loop-file=inf";
 
 /// Executables [`launch`] uses for each [`PlayPlan`] variant.
 ///
-/// The defaults are `mpv` for video and `xdg-open` for web. Tests and callers
-/// that want a different program replace these paths. Arguments stay the same:
-/// an infinite file loop plus the media path, or the file URL alone.
+/// The default video action is a muted Plasma wallpaper. `video` is the
+/// program used only when [`Self::plasma`] is false: an explicit override
+/// such as `--video-player`. That override gets `mpv` arguments. Web playback
+/// stays `xdg-open`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Players {
-    /// Video player. Default: `mpv`.
+    /// Video player used when [`Self::plasma`] is false. Default: `mpv`.
     pub video: PathBuf,
     /// Program that opens a web wallpaper. Default: `xdg-open`.
     pub web: PathBuf,
+    /// When true, a video plan is installed and selected as a Plasma wallpaper.
+    ///
+    /// The default is true. An explicit video player sets this to false and
+    /// spawns [`Self::video`] instead.
+    pub plasma: bool,
+    /// `qdbus6` or `qdbus`, used to call [`PLASMA_DBUS_METHOD`].
+    pub plasmashell: PathBuf,
+    /// `$XDG_DATA_HOME` or `~/.local/share`. The wallpaper package is copied
+    /// to `plasma/wallpapers/` inside this directory.
+    pub plasma_data_home: PathBuf,
+    /// Mute the Plasma video wallpaper. The default is true.
+    ///
+    /// Set this to false to pass sound on. The explicit `mpv` override does
+    /// not read this flag.
+    pub muted: bool,
 }
 
 impl Default for Players {
@@ -188,6 +212,10 @@ impl Default for Players {
         Self {
             video: PathBuf::from("mpv"),
             web: PathBuf::from("xdg-open"),
+            plasma: true,
+            plasmashell: plasma::default_plasmashell_tool(),
+            plasma_data_home: plasma::default_plasma_data_home(),
+            muted: true,
         }
     }
 }
@@ -199,6 +227,14 @@ pub enum LaunchError {
     MissingPlayer { program: PathBuf, source: io::Error },
     /// Spawning `program` failed for a reason other than a missing executable.
     Spawn { program: PathBuf, source: io::Error },
+    /// The Plasma shell scripting tool (`qdbus6` or `qdbus`) was not found.
+    ///
+    /// No video player is started.
+    MissingPlasmashell { program: PathBuf, source: io::Error },
+    /// The user-local wallpaper package could not be written.
+    PlasmaInstall { path: PathBuf, source: io::Error },
+    /// The Plasma shell script could not be built for this file.
+    PlasmaScript { message: String },
 }
 
 impl fmt::Display for LaunchError {
@@ -214,6 +250,23 @@ impl fmt::Display for LaunchError {
             LaunchError::Spawn { program, source } => {
                 write!(f, "failed to start {}: {source}", program.display())
             }
+            LaunchError::MissingPlasmashell { program, source } => {
+                write!(
+                    f,
+                    "plasmashell tool not found: {}: {source}",
+                    program.display()
+                )
+            }
+            LaunchError::PlasmaInstall { path, source } => {
+                write!(
+                    f,
+                    "failed to install the Plasma wallpaper plugin into {}: {source}",
+                    path.display()
+                )
+            }
+            LaunchError::PlasmaScript { message } => {
+                write!(f, "failed to build the Plasma wallpaper script: {message}")
+            }
         }
     }
 }
@@ -221,24 +274,37 @@ impl fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            LaunchError::MissingPlayer { source, .. } | LaunchError::Spawn { source, .. } => {
-                Some(source)
-            }
+            LaunchError::MissingPlayer { source, .. }
+            | LaunchError::Spawn { source, .. }
+            | LaunchError::MissingPlasmashell { source, .. }
+            | LaunchError::PlasmaInstall { source, .. } => Some(source),
+            LaunchError::PlasmaScript { .. } => None,
         }
     }
 }
 
-/// Start `plan` as a child process.
+/// Start `plan`.
 ///
-/// A video plan spawns `players.video`. When `loops` is set, the arguments are
-/// `--loop-file=inf` and then the resolved media path, which is `mpv`'s
-/// infinite loop of that file. When `loops` is clear, the only argument is the
-/// media path. A web plan spawns `players.web` with the file URL as its only
-/// argument.
+/// A video plan with [`Players::plasma`] set (the default) installs the
+/// user-local video wallpaper plugin and runs the plasmashell tool with a
+/// script that selects it. That path does not spawn [`Players::video`]. When
+/// `plasma` is clear, a video plan spawns `players.video`. When `loops` is
+/// set, the arguments are `--loop-file=inf` and then the resolved media path,
+/// which is `mpv`'s infinite loop of that file. When `loops` is clear, the
+/// only argument is the media path.
+///
+/// A web plan spawns `players.web` with the file URL as its only argument.
 ///
 /// The returned [`Child`] is still running. A missing executable is
-/// [`LaunchError::MissingPlayer`].
+/// [`LaunchError::MissingPlayer`], or [`LaunchError::MissingPlasmashell`]
+/// for the Plasma path.
 pub fn launch(plan: &PlayPlan, players: &Players) -> Result<Child, LaunchError> {
+    if let PlayPlan::Video { file, .. } = plan {
+        if players.plasma {
+            return plasma::launch_plasma_wallpaper(file, players);
+        }
+    }
+
     let program = match plan {
         PlayPlan::Video { .. } => &players.video,
         PlayPlan::Web { .. } => &players.web,
@@ -309,9 +375,10 @@ impl std::error::Error for PlayFirstError {
 ///
 /// Entries come from [`scan_library`](wallpaper_import::scan_library), in
 /// directory path order. Scene, application, and other unsupported entries
-/// are skipped. The first video entry is started with [`launch`]: an infinite
-/// loop of the resolved media file. The first web entry, when no video sorts
-/// earlier, is started with the file URL. Later entries are left alone.
+/// are skipped. The first video entry is started with [`launch`]: a muted
+/// Plasma wallpaper of the resolved media file, unless `players.plasma` is
+/// clear. The first web entry, when no video sorts earlier, is started with
+/// the file URL. Later entries are left alone.
 ///
 /// A library whose entries are all unsupported, including a library of only
 /// scene projects, returns [`PlayFirstError::NothingPlayable`] and starts no

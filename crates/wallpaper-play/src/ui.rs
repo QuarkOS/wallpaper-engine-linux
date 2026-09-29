@@ -34,8 +34,9 @@ struct State {
 /// Bind `127.0.0.1`, print `http://127.0.0.1:{port}`, and serve until the process ends.
 ///
 /// `library` is the workshop directory, or `None` when none was found. The
-/// page still loads in that case. `players` chooses the video and web
-/// executables; the defaults are `mpv` and `xdg-open`.
+/// page still loads in that case. `players` chooses how a video or web item
+/// starts. The default video action is a muted Plasma wallpaper. Web playback
+/// uses `xdg-open`.
 pub fn serve(library: Option<PathBuf>, players: Players) -> io::Result<()> {
     let listener = bind_loopback()?;
     let port = listener.local_addr()?.port();

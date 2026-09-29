@@ -87,6 +87,8 @@ fn players_using(stub: PathBuf) -> Players {
     Players {
         video: stub.clone(),
         web: stub,
+        plasma: false,
+        ..Players::default()
     }
 }
 

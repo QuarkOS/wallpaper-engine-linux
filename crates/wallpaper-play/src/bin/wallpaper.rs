@@ -15,23 +15,35 @@ use wallpaper_play::{
 
 const USAGE: &str = "\
 Usage: wallpaper list [--steam-root DIR]
-       wallpaper play [ID] [--steam-root DIR] [--video-player PATH] [--web-player PATH]
-       wallpaper ui [--steam-root DIR] [--video-player PATH] [--web-player PATH]
+       wallpaper play [ID] [--steam-root DIR] [--sound] [--plasmashell PATH]
+                        [--video-player PATH] [--web-player PATH]
+       wallpaper ui [--steam-root DIR] [--sound] [--plasmashell PATH]
+                      [--video-player PATH] [--web-player PATH]
 
 list prints one workshop item per line: id, type, and title, sorted by id.
-play ID launches that video or web item. A scene item, or an id that is not
-in the library, exits with an error and does not start a player.
-play with no ID launches the first video or web wallpaper in sorted path order.
+play ID sets that video item as a KDE Plasma wallpaper, or opens a web item.
+A scene item, or an id that is not in the library, exits with an error and
+does not start a player.
+play with no ID uses the first video or web wallpaper in sorted path order.
+A video item is muted and looped behind the desktop icons on every desktop
+Plasma scripting can see. --sound leaves the audio on.
+--plasmashell is the qdbus tool. It calls
+org.kde.PlasmaShell.evaluateScript. The default is the first of qdbus6,
+qdbus-qt6, and qdbus that is on PATH. A missing plasmashell tool is an error
+and does not start mpv.
+--video-player PATH skips the Plasma wallpaper and runs PATH with mpv
+arguments: an infinite file loop and the media path. The default program for
+that override is mpv.
 ui binds to 127.0.0.1, prints the page URL, and serves the workshop library.
-The page plays a video or web item. A scene item, or an id that is not in the
-library, is an error and does not start a player.
+The page plays a video or web item the same way play does. A scene item, or
+an id that is not in the library, is an error and does not start a player.
 Without --steam-root, search ~/.steam/steam, ~/.local/share/Steam, and
 ~/.steam/root under HOME. Each root is checked for
 steamapps/workshop/content/431960, then for libraries named in
 steamapps/libraryfolders.vdf. The first match is used.
 --steam-root DIR uses that root and its libraryfolders.vdf, and does not
 search HOME.
---video-player defaults to mpv. --web-player defaults to xdg-open.";
+--web-player defaults to xdg-open.";
 
 fn main() -> ExitCode {
     match run(env::args().skip(1)) {
@@ -52,11 +64,15 @@ enum Command {
         steam_root: Option<PathBuf>,
         video_player: Option<PathBuf>,
         web_player: Option<PathBuf>,
+        plasmashell: Option<PathBuf>,
+        sound: bool,
     },
     Ui {
         steam_root: Option<PathBuf>,
         video_player: Option<PathBuf>,
         web_player: Option<PathBuf>,
+        plasmashell: Option<PathBuf>,
+        sound: bool,
     },
 }
 
@@ -71,15 +87,11 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), CliError> {
             steam_root,
             video_player,
             web_player,
+            plasmashell,
+            sound,
         } => {
             let library = resolve_library(steam_root)?;
-            let mut players = Players::default();
-            if let Some(video) = video_player {
-                players.video = video;
-            }
-            if let Some(web) = web_player {
-                players.web = web;
-            }
+            let players = players_from_flags(video_player, web_player, plasmashell, sound);
             let mut child = match id {
                 Some(id) => play_id(&library, &id, &players)?,
                 None => play_first(&library, &players)?,
@@ -95,23 +107,42 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<(), CliError> {
             steam_root,
             video_player,
             web_player,
+            plasmashell,
+            sound,
         } => {
             let library = match resolve_library(steam_root) {
                 Ok(path) => Some(path),
                 Err(CliError::MissingHome | CliError::SteamRoot(_) | CliError::Workshop(_)) => None,
                 Err(error) => return Err(error),
             };
-            let mut players = Players::default();
-            if let Some(video) = video_player {
-                players.video = video;
-            }
-            if let Some(web) = web_player {
-                players.web = web;
-            }
+            let players = players_from_flags(video_player, web_player, plasmashell, sound);
             wallpaper_play::ui::serve(library, players).map_err(CliError::Serve)?;
             Ok(())
         }
     }
+}
+
+fn players_from_flags(
+    video_player: Option<PathBuf>,
+    web_player: Option<PathBuf>,
+    plasmashell: Option<PathBuf>,
+    sound: bool,
+) -> Players {
+    let mut players = Players::default();
+    if let Some(video) = video_player {
+        players.video = video;
+        players.plasma = false;
+    }
+    if let Some(web) = web_player {
+        players.web = web;
+    }
+    if let Some(tool) = plasmashell {
+        players.plasmashell = tool;
+    }
+    if sound {
+        players.muted = false;
+    }
+    players
 }
 
 fn resolve_library(steam_root: Option<PathBuf>) -> Result<PathBuf, CliError> {
@@ -248,11 +279,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
     let mut steam_root = None;
     let mut video_player = None;
     let mut web_player = None;
+    let mut plasmashell = None;
+    let mut sound = false;
     let mut id = None;
     let rest: Vec<String> = args.collect();
     let mut index = 0;
     while index < rest.len() {
         let arg = &rest[index];
+        if arg == "--sound" && matches!(command, "play" | "ui") {
+            sound = true;
+            index += 1;
+            continue;
+        }
         if let Some(flag) = arg.strip_prefix("--") {
             let value = rest
                 .get(index + 1)
@@ -261,6 +299,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
                 (_, "steam-root") => steam_root = Some(PathBuf::from(value)),
                 ("play" | "ui", "video-player") => video_player = Some(PathBuf::from(value)),
                 ("play" | "ui", "web-player") => web_player = Some(PathBuf::from(value)),
+                ("play" | "ui", "plasmashell") => plasmashell = Some(PathBuf::from(value)),
                 _ => {
                     return Err(CliError::Usage(format!(
                         "unknown argument `--{flag}`\n{USAGE}"
@@ -286,6 +325,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
             steam_root,
             video_player,
             web_player,
+            plasmashell,
+            sound,
         })
     } else {
         Ok(Command::Play {
@@ -293,6 +334,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, CliErro
             steam_root,
             video_player,
             web_player,
+            plasmashell,
+            sound,
         })
     }
 }

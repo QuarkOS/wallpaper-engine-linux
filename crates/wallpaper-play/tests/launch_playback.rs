@@ -94,14 +94,21 @@ fn players_using(stub: PathBuf) -> Players {
     Players {
         video: stub.clone(),
         web: stub,
+        plasma: false,
+        ..Players::default()
     }
 }
 
 #[test]
-fn default_players_are_mpv_and_xdg_open() {
+fn default_video_action_is_a_muted_plasma_wallpaper() {
     let players = Players::default();
-    assert_eq!(players.video, Path::new("mpv"));
+    assert!(players.plasma);
+    assert!(players.muted);
     assert_eq!(players.web, Path::new("xdg-open"));
+    assert_eq!(
+        wallpaper_play::PLASMA_VIDEO_WALLPAPER_PLUGIN,
+        "linux.wallpaper.video"
+    );
 }
 
 #[test]
@@ -176,6 +183,8 @@ fn missing_player_executable_is_an_error() {
     let players = Players {
         video: missing_video.clone(),
         web: missing_web.clone(),
+        plasma: false,
+        ..Players::default()
     };
 
     let video = PlayPlan::Video {
