@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "wallpaper"
+            }
+        ],
+        "Category": "",
+        "Description": "Show scene image layers behind the desktop icons",
+        "Icon": "image-x-generic",
+        "Id": "linux.wallpaper.scene",
+        "License": "MIT",
+        "Name": "Scene",
+        "Version": "1",
+        "Website": ""
+    },
+    "X-KDE-ParentApp": "org.kde.plasmashell",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

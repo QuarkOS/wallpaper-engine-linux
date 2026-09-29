@@ -2,9 +2,11 @@
 //!
 //! [`serve`] binds to `127.0.0.1` on an ephemeral port, prints that URL, and
 //! serves the page. `GET /api/library` lists each workshop item. `POST
-//! /api/play` with `{"id":"..."}` starts a video or web item through
-//! [`launch`](crate::launch). Scene and other unsupported items stay in the
-//! list. Playing one is an error and does not start a player.
+//! /api/play` with `{"id":"..."}` starts an item through
+//! [`launch`](crate::launch). The page offers video and web items. A scene
+//! with a visible image layer can be started through the play API. A scene
+//! with nothing to show, and any other unsupported item, is an error and
+//! does not start a player.
 
 use std::env;
 use std::fs;

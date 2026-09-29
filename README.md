@@ -1,8 +1,8 @@
 # Install wallpaper on Linux
 
-`wallpaper` plays video and web Wallpaper Engine workshop items that you already own. It reads the files Steam downloaded to your disk. A video item becomes a muted KDE Plasma wallpaper behind the desktop icons. A web item becomes a muted KDE Plasma wallpaper the same way, loaded in Qt WebEngine.
+`wallpaper` plays video, web, and scene Wallpaper Engine workshop items that you already own. It reads the files Steam downloaded to your disk. A video item becomes a muted KDE Plasma wallpaper behind the desktop icons. A web item becomes a muted KDE Plasma wallpaper the same way, loaded in Qt WebEngine. Image layers in a scene can show on the desktop.
 
-This project is not Wallpaper Engine. It is not affiliated with Wallpaper Engine or Valve. It does not download workshop content. Scene wallpapers do not play.
+This project is not Wallpaper Engine. It is not affiliated with Wallpaper Engine or Valve. It does not download workshop content. Particles, text, models, and scripts still cannot.
 
 ## Before you start
 
@@ -68,9 +68,9 @@ Each line shows one workshop item: id, type, and title. Lines are sorted by id.
    wallpaper play 1234567890
    ```
 
-The command waits until the player exits. A scene item, or an id that is not in your library, exits with status 1 and starts no player.
+The command waits until the plasmashell tool exits. A scene with no image or video layer, or an id that is not in your library, exits with status 1 and starts no player.
 
-To play the first video or web item in the library, leave out the id:
+To play the first video or web item in the library, leave out the id. That form does not select a scene:
 
 ```sh
 wallpaper play
@@ -98,7 +98,7 @@ qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript
 
 Plasma 6.7 does not ship a stock video wallpaper plugin. The installed plugin loops the file with Qt Multimedia. The script sets that plugin on every desktop `desktops()` returns. Audio is muted. Pass `--sound` to leave it on.
 
-`--video-player PATH` skips the Plasma wallpaper for that video and runs the program with `mpv` arguments instead. It does not change web playback.
+`--video-player PATH` skips the Plasma wallpaper for that video and runs the program with `mpv` arguments instead. It does not change web or scene playback.
 
 ```sh
 wallpaper play 1234567890 --sound
@@ -113,6 +113,19 @@ On KDE Plasma 6, `play` installs a web wallpaper plugin into `~/.local/share/pla
 
 ```sh
 wallpaper play 1234567890 --web-player /usr/bin/firefox
+```
+
+## Scene wallpapers
+
+On KDE Plasma 6, `play` of a scene id installs a wallpaper plugin into `~/.local/share/plasma/wallpapers/linux.wallpaper.scene` (or `$XDG_DATA_HOME/plasma/wallpapers/linux.wallpaper.scene`) and selects it with the same Plasma Shell scripting call as a video wallpaper. Image layers in a scene can show on the desktop. The first resolved image or video fills the desktop. A video used as a layer texture loops. Audio for that video is muted. Pass `--sound` to leave it on. A still image has no audio.
+
+Particles, text, models, and scripts still cannot. A scene with no resolvable image or video layer exits with an error and starts no player. Installing the scene plugin does not remove the video or web plugin.
+
+`--video-player` and `--web-player` do not change scene playback. They do not start another program for that item.
+
+```sh
+wallpaper play 1234567890
+wallpaper play 1234567890 --sound
 ```
 
 ## License

@@ -1,4 +1,4 @@
-//! Turn a resolved video or web wallpaper into a play plan and start it.
+//! Turn a resolved video, web, or scene wallpaper into a play plan and start it.
 //!
 //! A desktop player scans a library with [`wallpaper_import::scan_library`],
 //! then calls [`plan_playback`] on each entry. [`launch`] starts that plan.
@@ -7,15 +7,19 @@
 //! plugin on every desktop. Pass an explicit video player to spawn `mpv`
 //! instead. A web plan is a muted KDE Plasma wallpaper too: a separate
 //! user-local QML plugin loads the page in Qt WebEngine. Pass an explicit
-//! web player to spawn that program with the `file://` URL instead. Scene,
-//! application, and other unsupported types, and video or web projects whose
+//! web player to spawn that program with the `file://` URL instead. A scene
+//! plan installs `linux.wallpaper.scene` and shows visible image layers. A
+//! video texture loops muted. A still image has no audio. Particles, text,
+//! models, and scripts are not played. Application projects, a scene with
+//! nothing to show, other unsupported types, and video or web projects whose
 //! media file is missing, are errors from [`plan_playback`]. [`play_first`]
-//! scans a library, skips unsupported entries, and [`launch`]es the first
-//! video or web wallpaper. This crate does not render scene wallpapers.
+//! scans a library, skips unsupported entries (including scenes), and
+//! [`launch`]es the first video or web wallpaper.
 //!
-//! The `wallpaper` command calls [`play_first`] on a workshop library.
-//! `wallpaper ui` serves a local page that lists the same library and plays
-//! one video or web item. Scene items are refused and do not start a player.
+//! The `wallpaper` command calls [`play_first`] on a workshop library, or
+//! [`plan_playback`] when an id is given. `wallpaper ui` serves a local page
+//! that lists the same library and plays one video or web item. A scene with
+//! nothing to show is refused and does not start a player.
 //! `wallpaper play --steam-root DIR` uses that Steam root, then any extra
 //! library named in its `steamapps/libraryfolders.vdf`. Without
 //! `--steam-root`, [`steam_root::find_steam_root`] checks `~/.steam/steam`,
@@ -32,21 +36,45 @@ use std::process::{Child, Command};
 use wallpaper_import::{resolve_media, scan_library, ImportError, LibraryEntry, Wallpaper};
 
 mod plasma;
+mod scene;
 pub mod steam_root;
 pub mod ui;
 
 pub use plasma::{
-    install_plasma_video_wallpaper, install_plasma_web_wallpaper, plasma_wallpaper_dir,
+    install_plasma_scene_wallpaper, install_plasma_video_wallpaper, install_plasma_web_wallpaper,
+    plasma_scene_wallpaper_dir, plasma_scene_wallpaper_script, plasma_wallpaper_dir,
     plasma_wallpaper_script, plasma_web_wallpaper_dir, plasma_web_wallpaper_script,
-    PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_VIDEO_WALLPAPER_PLUGIN,
-    PLASMA_WEB_WALLPAPER_PLUGIN,
+    PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_SCENE_WALLPAPER_PLUGIN,
+    PLASMA_VIDEO_WALLPAPER_PLUGIN, PLASMA_WEB_WALLPAPER_PLUGIN,
 };
+
+/// One visible image layer resolved from a scene.
+///
+/// `url` is a `file://` URL of a file inside the project directory.
+/// [`SceneVisual::Image`] is a still picture and has no audio.
+/// [`SceneVisual::Video`] loops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneLayer {
+    pub url: String,
+    pub visual: SceneVisual,
+}
+
+/// Picture or looping video inside a [`SceneLayer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneVisual {
+    /// png, jpg, jpeg, gif, or webp. No audio output.
+    Image,
+    /// mp4, webm, or mkv. Loops. Muted unless sound was requested.
+    Video,
+}
 
 /// What a desktop player should run for one library entry.
 ///
 /// Video playback loops. Web playback loads the HTML file through a `file://`
-/// URL. The player does not choose a different file than the one
-/// [`resolve_media`](wallpaper_import::resolve_media) returned.
+/// URL. Scene playback shows the resolved image layers. The player does not
+/// choose a different file than the one
+/// [`resolve_media`](wallpaper_import::resolve_media) returned for video and
+/// web, or the scene resolver returned for an image layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlayPlan {
     /// Open `file` and play it again from the start when it ends.
@@ -57,12 +85,19 @@ pub enum PlayPlan {
     ///
     /// The URL points at the resolved HTML file.
     Web { url: String },
+    /// Show scene image layers on the desktop.
+    ///
+    /// `layers` is in scene order. The first entry fills the desktop. Later
+    /// entries are shown as well. [`plan_playback`] does not produce an empty
+    /// list.
+    Scene { layers: Vec<SceneLayer> },
 }
 
 /// Failure while turning a library entry into a [`PlayPlan`].
 #[derive(Debug)]
 pub enum PlayError {
-    /// Scene, application, and other types this player does not play.
+    /// A scene with nothing to show, an application, or another type this
+    /// player does not play.
     Unsupported { kind: String },
     /// The project names a media file that is not a file on disk.
     MissingFile { path: PathBuf },
@@ -112,16 +147,45 @@ impl std::error::Error for PlayError {
 ///
 /// Video and web entries must resolve to a file inside the project directory.
 /// The video plan names that file and sets `loops` so the player repeats it.
-/// The web plan is a `file://` URL for that HTML file. Unsupported entries and
-/// missing files return an error instead of a plan.
+/// The web plan is a `file://` URL for that HTML file.
+///
+/// A scene entry plays visible image layers from its scene file. Each layer's
+/// image path is a picture, a video, or a model JSON whose material names a
+/// texture. Particles, text, models, scripts, and hidden layers are skipped.
+/// A scene with nothing to show returns [`PlayError::Unsupported`] and does
+/// not name a file. Other unsupported entries and missing video or web files
+/// return an error instead of a plan.
 pub fn plan_playback(entry: &LibraryEntry) -> Result<PlayPlan, PlayError> {
-    let file = resolve_media(entry).map_err(from_import)?;
     match &entry.wallpaper {
-        Wallpaper::Video { .. } => Ok(PlayPlan::Video { file, loops: true }),
-        Wallpaper::Web { .. } => Ok(PlayPlan::Web {
-            url: file_url(&file)?,
-        }),
+        Wallpaper::Unsupported { kind } if is_scene(kind) => plan_scene(entry, kind),
         Wallpaper::Unsupported { kind } => Err(PlayError::Unsupported { kind: kind.clone() }),
+        Wallpaper::Video { .. } => {
+            let file = resolve_media(entry).map_err(from_import)?;
+            Ok(PlayPlan::Video { file, loops: true })
+        }
+        Wallpaper::Web { .. } => {
+            let file = resolve_media(entry).map_err(from_import)?;
+            Ok(PlayPlan::Web {
+                url: file_url(&file)?,
+            })
+        }
+    }
+}
+
+fn is_scene(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("scene")
+}
+
+/// Scene failures stay [`PlayError::Unsupported`]. The message does not name
+/// a path, including when the project directory is missing.
+fn plan_scene(entry: &LibraryEntry, kind: &str) -> Result<PlayPlan, PlayError> {
+    let layers = scene::scene_layers(&entry.directory);
+    if layers.is_empty() {
+        Err(PlayError::Unsupported {
+            kind: kind.to_string(),
+        })
+    } else {
+        Ok(PlayPlan::Scene { layers })
     }
 }
 
@@ -312,37 +376,40 @@ impl std::error::Error for LaunchError {
 /// path does not spawn [`Players::web`]. When `web_plasma` is clear, a web
 /// plan spawns `players.web` with the file URL as its only argument.
 ///
+/// A scene plan always installs the scene wallpaper plugin and runs the
+/// plasmashell tool. It does not spawn [`Players::video`] or [`Players::web`],
+/// even when an explicit video or web player cleared the Plasma flags.
+///
 /// The returned [`Child`] is still running. A missing executable is
 /// [`LaunchError::MissingPlayer`], or [`LaunchError::MissingPlasmashell`]
-/// for either Plasma path. A missing plasmashell tool does not fall back to
+/// for a Plasma path. A missing plasmashell tool does not fall back to
 /// `mpv` or `xdg-open`.
 pub fn launch(plan: &PlayPlan, players: &Players) -> Result<Child, LaunchError> {
     match plan {
+        PlayPlan::Scene { layers } => plasma::launch_plasma_scene_wallpaper(layers, players),
         PlayPlan::Video { file, .. } if players.plasma => {
-            return plasma::launch_plasma_wallpaper(file, players);
+            plasma::launch_plasma_wallpaper(file, players)
         }
         PlayPlan::Web { url } if players.web_plasma => {
-            return plasma::launch_plasma_web_wallpaper(url, players);
+            plasma::launch_plasma_web_wallpaper(url, players)
         }
-        _ => {}
-    }
-
-    let program = match plan {
-        PlayPlan::Video { .. } => &players.video,
-        PlayPlan::Web { .. } => &players.web,
-    };
-    let mut command = Command::new(program);
-    match plan {
         PlayPlan::Video { file, loops } => {
+            let mut command = Command::new(&players.video);
             if *loops {
                 command.arg(MPV_INFINITE_FILE_LOOP);
             }
             command.arg(file);
+            spawn_player(&players.video, command)
         }
         PlayPlan::Web { url } => {
+            let mut command = Command::new(&players.web);
             command.arg(url);
+            spawn_player(&players.web, command)
         }
     }
+}
+
+fn spawn_player(program: &Path, mut command: Command) -> Result<Child, LaunchError> {
     command.spawn().map_err(|source| {
         let program = program.to_path_buf();
         if source.kind() == io::ErrorKind::NotFound {
@@ -397,9 +464,11 @@ impl std::error::Error for PlayFirstError {
 ///
 /// Entries come from [`scan_library`](wallpaper_import::scan_library), in
 /// directory path order. Scene, application, and other unsupported entries
-/// are skipped. The first video entry is started with [`launch`]: a muted
-/// Plasma wallpaper of the resolved media file, unless `players.plasma` is
-/// clear. The first web entry, when no video sorts earlier, is a muted
+/// are skipped. A scene is skipped here even when its image layers could be
+/// played by [`plan_playback`]. Play that item by id. The first video entry
+/// is started with [`launch`]: a muted Plasma wallpaper of the resolved media
+/// file, unless `players.plasma` is clear. The first web entry, when no video
+/// sorts earlier, is a muted
 /// Plasma wallpaper of the file URL, unless `players.web_plasma` is clear.
 /// Later entries are left alone.
 ///

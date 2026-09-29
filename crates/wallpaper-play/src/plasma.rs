@@ -1,11 +1,11 @@
-//! KDE Plasma 6 video and web wallpapers.
+//! KDE Plasma 6 video, web, and scene wallpapers.
 //!
 //! Plasma 6.7's `plasma-workspace` `wallpapers/` directory ships `color` and
 //! `image` (the image package also installs `org.kde.slideshow`). It does not
-//! ship a video or web wallpaper plugin, so this module installs user-local
-//! QML packages and selects one through Plasma Shell scripting.
+//! ship a video, web, or scene wallpaper plugin, so this module installs
+//! user-local QML packages and selects one through Plasma Shell scripting.
 //!
-//! The video package and the web package are separate directories. Installing
+//! The video, web, and scene packages are separate directories. Installing
 //! one writes only that package's files.
 //!
 //! The script is evaluated with `qdbus6`, `qdbus-qt6`, or `qdbus`:
@@ -20,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
-use super::{file_url, LaunchError, PlayError, Players};
+use super::{file_url, LaunchError, PlayError, Players, SceneLayer, SceneVisual};
 
 /// Plugin id installed under the user Plasma wallpaper directory.
 ///
@@ -31,6 +31,12 @@ pub const PLASMA_VIDEO_WALLPAPER_PLUGIN: &str = "linux.wallpaper.video";
 ///
 /// This is a different directory from [`PLASMA_VIDEO_WALLPAPER_PLUGIN`].
 pub const PLASMA_WEB_WALLPAPER_PLUGIN: &str = "linux.wallpaper.web";
+
+/// Plugin id for the scene wallpaper package.
+///
+/// Visible image layers are drawn here. This is a different directory from
+/// the video and web packages.
+pub const PLASMA_SCENE_WALLPAPER_PLUGIN: &str = "linux.wallpaper.scene";
 
 /// Session bus service that owns the Plasma shell script engine.
 pub const PLASMA_DBUS_SERVICE: &str = "org.kde.plasmashell";
@@ -81,6 +87,25 @@ const WEB_PACKAGE: &[(&str, &str)] = &[
     ),
 ];
 
+const SCENE_PACKAGE: &[(&str, &str)] = &[
+    (
+        "metadata.json",
+        include_str!("../plasma/linux.wallpaper.scene/metadata.json"),
+    ),
+    (
+        "contents/config/main.xml",
+        include_str!("../plasma/linux.wallpaper.scene/contents/config/main.xml"),
+    ),
+    (
+        "contents/ui/main.qml",
+        include_str!("../plasma/linux.wallpaper.scene/contents/ui/main.qml"),
+    ),
+    (
+        "contents/ui/config.qml",
+        include_str!("../plasma/linux.wallpaper.scene/contents/ui/config.qml"),
+    ),
+];
+
 /// `$XDG_DATA_HOME`, or `~/.local/share` when `HOME` is set.
 pub(crate) fn default_plasma_data_home() -> PathBuf {
     match env::var_os("XDG_DATA_HOME") {
@@ -121,6 +146,11 @@ pub fn plasma_web_wallpaper_dir(data_home: &Path) -> PathBuf {
     wallpaper_dir(data_home, PLASMA_WEB_WALLPAPER_PLUGIN)
 }
 
+/// Directory the scene wallpaper package is copied into.
+pub fn plasma_scene_wallpaper_dir(data_home: &Path) -> PathBuf {
+    wallpaper_dir(data_home, PLASMA_SCENE_WALLPAPER_PLUGIN)
+}
+
 fn wallpaper_dir(data_home: &Path, plugin: &str) -> PathBuf {
     data_home.join("plasma").join("wallpapers").join(plugin)
 }
@@ -145,6 +175,34 @@ pub fn plasma_wallpaper_script(file: &Path, muted: bool) -> Result<String, PlayE
 /// to the `Muted` config key. The default call passes `true`.
 pub fn plasma_web_wallpaper_script(url: &str, muted: bool) -> String {
     desktop_script(PLASMA_WEB_WALLPAPER_PLUGIN, "PageUrl", url, muted)
+}
+
+/// JavaScript that selects the scene wallpaper and names every layer.
+///
+/// `layers` is written as a JSON array of `{url, kind}` objects. Each `url`
+/// is a `file://` URL. `kind` is `image` or `video`. The first object is the
+/// visual that fills the desktop. `muted` is written to the `Muted` config
+/// key and applies to video layers. Still images have no audio. The default
+/// call passes `true`.
+pub fn plasma_scene_wallpaper_script(layers: &[SceneLayer], muted: bool) -> String {
+    let payload =
+        serde_json::to_string(&layer_payload(layers)).unwrap_or_else(|_| "[]".to_string());
+    desktop_script(PLASMA_SCENE_WALLPAPER_PLUGIN, "Layers", &payload, muted)
+}
+
+fn layer_payload(layers: &[SceneLayer]) -> Vec<serde_json::Value> {
+    layers
+        .iter()
+        .map(|layer| {
+            serde_json::json!({
+                "url": layer.url,
+                "kind": match layer.visual {
+                    SceneVisual::Image => "image",
+                    SceneVisual::Video => "video",
+                },
+            })
+        })
+        .collect()
 }
 
 fn desktop_script(plugin_id: &str, config_key: &str, config_value: &str, muted: bool) -> String {
@@ -178,6 +236,14 @@ pub fn install_plasma_video_wallpaper(data_home: &Path) -> Result<PathBuf, Launc
 /// in place.
 pub fn install_plasma_web_wallpaper(data_home: &Path) -> Result<PathBuf, LaunchError> {
     install_wallpaper_package(data_home, PLASMA_WEB_WALLPAPER_PLUGIN, WEB_PACKAGE)
+}
+
+/// Copy the scene wallpaper package into the user Plasma wallpaper directory.
+///
+/// The video and web packages, when they are already installed beside this
+/// one, are left in place.
+pub fn install_plasma_scene_wallpaper(data_home: &Path) -> Result<PathBuf, LaunchError> {
+    install_wallpaper_package(data_home, PLASMA_SCENE_WALLPAPER_PLUGIN, SCENE_PACKAGE)
 }
 
 /// Write one wallpaper package. Sibling packages under `wallpapers/` stay.
@@ -227,6 +293,26 @@ pub(crate) fn launch_plasma_web_wallpaper(
 ) -> Result<Child, LaunchError> {
     install_plasma_web_wallpaper(&players.plasma_data_home)?;
     let script = plasma_web_wallpaper_script(url, players.muted);
+    evaluate_plasma_script(&players.plasmashell, &script)
+}
+
+/// Install the scene wallpaper package and ask plasmashell to select it.
+///
+/// This does not spawn a video player or a web browser, including when
+/// [`Players::plasma`] or [`Players::web_plasma`] is clear. A missing
+/// plasmashell tool is [`LaunchError::MissingPlasmashell`]. An empty layer
+/// list is refused before anything is installed.
+pub(crate) fn launch_plasma_scene_wallpaper(
+    layers: &[SceneLayer],
+    players: &Players,
+) -> Result<Child, LaunchError> {
+    if layers.is_empty() {
+        return Err(LaunchError::PlasmaScript {
+            message: "wallpaper type `scene` cannot be played".to_string(),
+        });
+    }
+    install_plasma_scene_wallpaper(&players.plasma_data_home)?;
+    let script = plasma_scene_wallpaper_script(layers, players.muted);
     evaluate_plasma_script(&players.plasmashell, &script)
 }
 

@@ -2,7 +2,7 @@
 name = "wallpaper-play"
 version = "0.1.0"
 edition = "2021"
-description = "Plan and launch video and web wallpapers as muted KDE Plasma wallpapers."
+description = "Plan and launch video, web, and scene image-layer wallpapers as muted KDE Plasma wallpapers."
 license = "MIT"
 publish = false
 

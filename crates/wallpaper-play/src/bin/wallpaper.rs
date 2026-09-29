@@ -21,25 +21,30 @@ Usage: wallpaper list [--steam-root DIR]
                       [--video-player PATH] [--web-player PATH]
 
 list prints one workshop item per line: id, type, and title, sorted by id.
-play ID sets that video or web item as a KDE Plasma wallpaper.
-A scene item, or an id that is not in the library, exits with an error and
-does not start a player.
+play ID sets that video, web, or scene item as a KDE Plasma wallpaper.
+A scene with no visible image or video layer, or an id that is not in the
+library, exits with an error and does not start a player.
 play with no ID uses the first video or web wallpaper in sorted path order.
-A video item is muted and looped behind the desktop icons on every desktop
-Plasma scripting can see. A web item loads that page in Qt WebEngine the
-same way. --sound leaves the audio on.
+It does not select a scene. A video item is muted and looped behind the
+desktop icons on every desktop Plasma scripting can see. A web item loads
+that page in Qt WebEngine the same way. A scene item shows its visible image
+layers. A video texture loops. A still image has no audio. --sound leaves
+video audio on. Particles, text, models, and scripts in a scene are not
+played.
 --plasmashell is the qdbus tool. It calls
 org.kde.PlasmaShell.evaluateScript. The default is the first of qdbus6,
 qdbus-qt6, and qdbus that is on PATH. A missing plasmashell tool is an error
 and does not start mpv or xdg-open.
 --video-player PATH skips the Plasma wallpaper for a video item and runs
 PATH with mpv arguments: an infinite file loop and the media path. It does
-not change web playback. The default program for that override is mpv.
+not change web or scene playback. The default program for that override is mpv.
 --web-player PATH skips the Plasma wallpaper for a web item and runs PATH
-with the file URL only. The default program for that override is xdg-open.
+with the file URL only. It does not change scene playback. The default
+program for that override is xdg-open.
 ui binds to 127.0.0.1, prints the page URL, and serves the workshop library.
-The page plays a video or web item the same way play does. A scene item, or
-an id that is not in the library, is an error and does not start a player.
+The page plays a video or web item the same way play does. A scene item is
+not offered on the page. An id that is not in the library is an error and
+does not start a player.
 Without --steam-root, search ~/.steam/steam, ~/.local/share/Steam, and
 ~/.steam/root under HOME. Each root is checked for
 steamapps/workshop/content/431960, then for libraries named in
