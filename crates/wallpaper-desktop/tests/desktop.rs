@@ -590,7 +590,7 @@ fn desktop_without_a_display_serves_and_stays_up() {
     assert_eq!(settings["autostartAsked"], false);
     assert_eq!(settings["autostart"], false);
     assert_eq!(settings["updateChannel"], "release");
-    assert_eq!(settings["version"], "0.1.0");
+    assert_eq!(settings["version"], "0.2.0");
     match running.child.try_wait() {
         Ok(None) => {}
         Ok(Some(status)) => panic!("desktop exited without a display: {status}"),
