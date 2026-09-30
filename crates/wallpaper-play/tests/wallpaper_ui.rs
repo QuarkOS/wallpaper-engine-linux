@@ -593,3 +593,159 @@ fn library_reports_the_live_plugin_and_play_selects_it() {
     );
     let _ = fs::remove_dir_all(&scratch);
 }
+
+fn css_rules(css: &str) -> Vec<(String, String)> {
+    let mut cleaned = String::new();
+    let mut chars = css.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            while let Some(inner) = chars.next() {
+                if inner == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    break;
+                }
+            }
+            continue;
+        }
+        cleaned.push(ch);
+    }
+    cleaned
+        .split('}')
+        .filter_map(|chunk| {
+            let (selector, body) = chunk.split_once('{')?;
+            let selector = selector.trim();
+            if selector.is_empty() || selector.starts_with('@') {
+                return None;
+            }
+            Some((selector.to_string(), body.to_string()))
+        })
+        .collect()
+}
+
+fn assert_preview_color_contract(css: &str) {
+    let rules = css_rules(css);
+    let mut resting = false;
+    let mut hover = false;
+    let mut focus = false;
+    for (selector, body) in &rules {
+        let selectors: Vec<&str> = selector.split(',').map(str::trim).collect();
+        let opens_color = body.contains("grayscale(0)")
+            || body.contains("filter: none")
+            || body.contains("filter:none");
+        if opens_color {
+            for sel in &selectors {
+                assert!(
+                    *sel == ".wallpaper-card:hover .preview"
+                        || *sel == ".wallpaper-card:focus-visible .preview",
+                    "color is only allowed on card hover and focus-visible, got `{sel}`"
+                );
+                if *sel == ".wallpaper-card:hover .preview" {
+                    hover = true;
+                }
+                if *sel == ".wallpaper-card:focus-visible .preview" {
+                    focus = true;
+                }
+            }
+        }
+        if selectors
+            .iter()
+            .any(|sel| *sel == ".wallpaper-card .preview")
+        {
+            assert!(
+                body.contains("grayscale(1)"),
+                "resting previews stay grayscale"
+            );
+            assert!(
+                !body.contains("grayscale(0)"),
+                "resting previews do not reveal color"
+            );
+            resting = true;
+        }
+    }
+    assert!(resting, "missing the resting grayscale preview rule");
+    assert!(hover, "missing the hover color rule");
+    assert!(focus, "missing the focus-visible color rule");
+    assert!(
+        !css.contains("hue-rotate") && !css.contains("saturate("),
+        "the chrome does not recolor from sampled accents"
+    );
+}
+
+fn function_body<'a>(script: &'a str, name: &str) -> &'a str {
+    let marker = format!("function {name}(");
+    let start = script
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing {name}"));
+    let bytes = script.as_bytes();
+    let mut index = start;
+    while index < bytes.len() && bytes[index] != b'{' {
+        index += 1;
+    }
+    let mut depth = 0;
+    let mut quote: Option<u8> = None;
+    let mut escape = false;
+    let body_start = index;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            if escape {
+                escape = false;
+            } else if byte == b'\\' {
+                escape = true;
+            } else if byte == open {
+                quote = None;
+            }
+        } else {
+            match byte {
+                b'"' | b'\'' | b'`' => quote = Some(byte),
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &script[body_start..=index];
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    panic!("unclosed function {name}");
+}
+
+#[test]
+fn preview_color_is_only_on_hover_and_focus_visible() {
+    let scratch = scratch_dir();
+    let (steam_root, _) = library_with_one_of_each(&scratch);
+    let steam_root = steam_root.display().to_string();
+    let ui = start_ui(&scratch, &["ui", "--steam-root", &steam_root]);
+
+    let (status, css) = get(ui.port, "/ui/styles.css");
+    assert_eq!(status, 200, "{css}");
+    assert_preview_color_contract(&css);
+
+    let (status, html) = get(ui.port, "/");
+    assert_eq!(status, 200, "{html}");
+    assert!(html.contains("<div id=\"updates\" hidden>"));
+    assert!(html.contains("value=\"release\""));
+    assert!(html.contains("value=\"preview\""));
+    assert!(html.contains("value=\"nightly\""));
+    assert!(html.contains("id=\"update-download\""));
+
+    let (status, script) = get(ui.port, "/ui/app.js");
+    assert_eq!(status, 200, "{script}");
+    assert!(script.contains("card.tabIndex = 0"));
+    let settings = function_body(&script, "loadSettings");
+    let prompt = settings
+        .find("autostartPromptEl.hidden = false")
+        .expect("prompt");
+    let check = settings.find("checkUpdates()").expect("startup check");
+    assert!(
+        prompt < check,
+        "the login question is shown before the update check starts"
+    );
+    assert!(!function_body(&script, "checkUpdates").contains("/api/updates/download"));
+    assert!(function_body(&script, "downloadUpdate").contains("/api/updates/download"));
+    let _ = fs::remove_dir_all(&scratch);
+}

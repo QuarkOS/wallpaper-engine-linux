@@ -8,11 +8,13 @@
 //! Settings live in `$XDG_CONFIG_HOME/wallpaper/settings.json`. One extra
 //! folder of Wallpaper Engine projects is stored there and included on the
 //! next scan. The first launch asks about starting on login. Yes writes an
-//! XDG autostart file that runs `wallpaper desktop`.
+//! XDG autostart file that runs `wallpaper desktop`. The same file stores the
+//! update channel. The default channel is release.
 
 mod library;
 mod server;
 mod settings;
+mod updates;
 mod window;
 
 use std::env;
@@ -24,7 +26,13 @@ pub use library::{collect_library, resolve_workshop, LibraryCard};
 pub use server::{serve, DesktopOptions, Server};
 pub use settings::{
     autostart_desktop_path, default_config_home, load_settings, save_settings, set_autostart,
-    set_extra_library, settings_path, Settings, AUTOSTART_DESKTOP,
+    set_extra_library, set_update_channel, settings_path, Settings, UpdateChannel,
+    AUTOSTART_DESKTOP,
+};
+pub use updates::{
+    check_channel, fetch_bytes, install_archive, is_newer, pack_gzip_tar, running_version,
+    sha256_hex, sha256sums_match, CheckOutcome, InstallOutcome, UpdateOffer, ARCHIVE_NAME,
+    GITHUB_RELEASES_URL, NEXT_LAUNCH_MESSAGE, SUMS_NAME,
 };
 pub use window::{display_available, open_library_window};
 
@@ -150,11 +158,17 @@ fn options_from_args(
         players.muted = false;
     }
 
+    let releases_url = env::var("WALLPAPER_RELEASES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
     Ok(DesktopOptions {
         steam_root,
         home: env::var_os("HOME").map(PathBuf::from),
         config_home: default_config_home(),
         players,
         plasma_data_dirs: None,
+        version: running_version(),
+        releases_url,
+        install_dir: None,
     })
 }

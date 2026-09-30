@@ -8,6 +8,14 @@ const autostartEl = document.querySelector("#autostart");
 const autostartPromptEl = document.querySelector("#autostart-prompt");
 const autostartYesEl = document.querySelector("#autostart-yes");
 const autostartNoEl = document.querySelector("#autostart-no");
+const updatesEl = document.querySelector("#updates");
+const updateChannelEl = document.querySelector("#update-channel");
+const checkUpdatesEl = document.querySelector("#check-updates");
+const updateStatusEl = document.querySelector("#update-status");
+const updateOfferEl = document.querySelector("#update-offer");
+const updateVersionEl = document.querySelector("#update-version");
+const updateNoteEl = document.querySelector("#update-note");
+const updateDownloadEl = document.querySelector("#update-download");
 
 const EMPTY_LIBRARY = "No workshop items found.";
 
@@ -69,6 +77,7 @@ function renderPreview(item) {
 function renderCard(item, liveScene) {
   const card = document.createElement("article");
   card.className = "wallpaper-card";
+  card.tabIndex = 0;
 
   const title = document.createElement("h2");
   title.className = "title";
@@ -232,6 +241,99 @@ async function saveAutostart(enabled) {
   autostartPromptEl.hidden = true;
 }
 
+function showUpdateMessage(message) {
+  updateStatusEl.textContent = message;
+}
+
+function clearUpdateOffer() {
+  updateOfferEl.hidden = true;
+  updateVersionEl.textContent = "";
+  updateNoteEl.textContent = "";
+}
+
+async function checkUpdates() {
+  clearUpdateOffer();
+  showUpdateMessage("Checking for updates…");
+  let response;
+  try {
+    response = await fetch("/api/updates/check", { method: "POST" });
+  } catch (error) {
+    showUpdateMessage("Could not check for updates.");
+    return;
+  }
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = {};
+  }
+  if (!response.ok || payload.state === "error" || payload.ok === false) {
+    showUpdateMessage(payload.error || "Could not check for updates.");
+    return;
+  }
+  if (payload.state === "available") {
+    updateOfferEl.hidden = false;
+    updateVersionEl.textContent = payload.version + " is available.";
+    updateNoteEl.textContent = payload.notes || "";
+    showUpdateMessage("");
+    return;
+  }
+  if (payload.state === "current") {
+    showUpdateMessage("This build is current.");
+    return;
+  }
+  showUpdateMessage(payload.error || "No release on this channel.");
+}
+
+async function saveChannel(channel) {
+  let response;
+  try {
+    response = await fetch("/api/updates/channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: channel }),
+    });
+  } catch (error) {
+    showUpdateMessage("Could not save the update channel.");
+    return;
+  }
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = {};
+  }
+  if (!response.ok || payload.ok === false) {
+    showUpdateMessage(payload.error || "Could not save the update channel.");
+    return;
+  }
+  await checkUpdates();
+}
+
+async function downloadUpdate() {
+  updateDownloadEl.disabled = true;
+  showUpdateMessage("Downloading the update…");
+  try {
+    const response = await fetch("/api/updates/download", { method: "POST" });
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = {};
+    }
+    if (!response.ok || payload.ok === false) {
+      showUpdateMessage(payload.error || "Could not download the update.");
+      return;
+    }
+    clearUpdateOffer();
+    showUpdateMessage(payload.message || "The next launch uses the new build.");
+  } catch (error) {
+    showUpdateMessage("Could not download the update.");
+  } finally {
+    updateDownloadEl.disabled = false;
+  }
+}
+
 async function loadSettings() {
   let response;
   try {
@@ -249,9 +351,14 @@ async function loadSettings() {
     return;
   }
   autostartEl.checked = !!settings.autostart;
+  if (settings.updateChannel === "preview" || settings.updateChannel === "nightly" || settings.updateChannel === "release") {
+    updateChannelEl.value = settings.updateChannel;
+  }
+  updatesEl.hidden = false;
   if (!settings.autostartAsked) {
     autostartPromptEl.hidden = false;
   }
+  checkUpdates();
 }
 
 rescanEl.addEventListener("click", () => {
@@ -265,6 +372,18 @@ addFolderEl.addEventListener("submit", (event) => {
     return;
   }
   addFolder(path);
+});
+
+updateChannelEl.addEventListener("change", () => {
+  saveChannel(updateChannelEl.value);
+});
+
+checkUpdatesEl.addEventListener("click", () => {
+  checkUpdates();
+});
+
+updateDownloadEl.addEventListener("click", () => {
+  downloadUpdate();
 });
 
 autostartEl.addEventListener("change", () => {

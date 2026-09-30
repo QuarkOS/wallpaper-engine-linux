@@ -127,7 +127,8 @@ form#add-folder label {
 }
 
 nav#controls button,
-#autostart-prompt button {
+#autostart-prompt button,
+#settings button {
   height: 32px;
   padding: 0 14px;
   font: inherit;
@@ -143,18 +144,22 @@ nav#controls button,
 }
 
 nav#controls button:hover,
-#autostart-prompt button:hover {
+#autostart-prompt button:hover,
+#settings button:hover {
   background: var(--gray-700);
   border-color: var(--gray-300);
 }
 
 nav#controls button:active,
-#autostart-prompt button:active { background: var(--gray-800); }
+#autostart-prompt button:active,
+#settings button:active { background: var(--gray-800); }
 
 nav#controls button:focus-visible,
 #autostart-prompt button:focus-visible,
+#settings button:focus-visible,
 button.play:focus-visible,
-#autostart:focus-visible {
+#autostart:focus-visible,
+#update-channel:focus-visible {
   outline: 2px solid var(--white);
   outline-offset: 2px;
 }
@@ -198,11 +203,18 @@ main#library {
 }
 
 .wallpaper-card:hover,
-.wallpaper-card:focus-within {
+.wallpaper-card:focus-within,
+.wallpaper-card:focus-visible {
   background: var(--gray-850);
   border-color: var(--gray-300);
 }
 
+.wallpaper-card:focus-visible {
+  outline: 2px solid var(--white);
+  outline-offset: 2px;
+}
+
+/* Resting previews are grayscale. Hover or keyboard focus shows the wallpaper colors. */
 .wallpaper-card .preview {
   display: block;
   width: calc(100% + 24px);
@@ -213,6 +225,11 @@ main#library {
   background: var(--gray-800);
   border-bottom: 1px solid var(--gray-700);
   filter: grayscale(1);
+}
+
+.wallpaper-card:hover .preview,
+.wallpaper-card:focus-visible .preview {
+  filter: grayscale(0);
 }
 
 .wallpaper-card .preview:not([src]) { display: none; }
@@ -283,7 +300,8 @@ button.play:disabled {
 
 .wallpaper-card:has(button.play:disabled) .preview { opacity: 0.5; }
 
-.wallpaper-card:has(button.play:disabled):hover {
+.wallpaper-card:has(button.play:disabled):hover,
+.wallpaper-card:has(button.play:disabled):focus-visible {
   background: var(--gray-950);
   border-color: var(--gray-700);
 }
@@ -334,6 +352,56 @@ section#settings label {
   margin: 0;
   accent-color: var(--white);
   cursor: pointer;
+}
+
+#updates {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+#update-channel {
+  height: 32px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--white);
+  background: var(--black);
+  border: 1px solid var(--gray-600);
+  border-radius: var(--radius);
+}
+
+#update-channel:hover { border-color: var(--gray-400); }
+
+#update-download {
+  color: var(--black);
+  background: var(--white);
+  border-color: var(--white);
+}
+
+#settings #update-download:hover {
+  background: var(--gray-300);
+  border-color: var(--gray-300);
+}
+
+#update-status,
+#update-version,
+#update-note {
+  flex: 1 0 100%;
+  margin: 0;
+  color: var(--gray-300);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+#update-offer {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 
 /* First-launch autostart prompt */
@@ -389,6 +457,9 @@ section#settings label {
   button.play { width: 100%; justify-content: center; height: 40px; }
   #autostart-prompt { left: var(--gutter); width: auto; }
   #autostart-prompt button { flex: 1 1 0; height: 40px; }
+  #settings button,
+  #update-channel { height: 40px; }
+  #update-channel { flex: 1 1 100%; }
 }
 
 /* Wide windows */

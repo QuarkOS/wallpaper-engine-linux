@@ -1,9 +1,10 @@
-//! Library folder and autostart choices.
+//! Library folder, autostart, and update channel choices.
 //!
 //! The file is `$XDG_CONFIG_HOME/wallpaper/settings.json`, or
 //! `~/.config/wallpaper/settings.json` when `XDG_CONFIG_HOME` is unset.
 //! Adding a folder stores that path. It does not copy project files.
 //! `autostartAsked` is absent until the first-launch question is answered.
+//! `updateChannel` is absent while it is still `release`.
 
 use std::fs;
 use std::io;
@@ -12,15 +13,49 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde::Serialize;
 
+/// Which GitHub release stream the desktop checks.
+///
+/// `release` is the newest non-prerelease tag that starts with `v`.
+/// `preview` is the newest prerelease tag that starts with `preview-`.
+/// `nightly` is the newest prerelease tag that starts with `nightly-`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdateChannel {
+    #[default]
+    Release,
+    Preview,
+    Nightly,
+}
+
+impl UpdateChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpdateChannel::Release => "release",
+            UpdateChannel::Preview => "preview",
+            UpdateChannel::Nightly => "nightly",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "release" => Some(UpdateChannel::Release),
+            "preview" => Some(UpdateChannel::Preview),
+            "nightly" => Some(UpdateChannel::Nightly),
+            _ => None,
+        }
+    }
+}
+
 /// Choices stored in `settings.json`.
 ///
 /// Absent optional fields are omitted from the file. `autostart_asked` is
-/// `None` until the user answers the login question.
+/// `None` until the user answers the login question. The update channel is
+/// omitted while it is [`UpdateChannel::Release`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Settings {
     pub extra_library: Option<PathBuf>,
     pub autostart_asked: Option<bool>,
     pub autostart: Option<bool>,
+    pub update_channel: UpdateChannel,
 }
 
 impl Settings {
@@ -51,6 +86,12 @@ struct SettingsFile {
     autostart_asked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     autostart: Option<bool>,
+    #[serde(
+        rename = "updateChannel",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    update_channel: Option<String>,
 }
 
 /// `$XDG_CONFIG_HOME`, or `$HOME/.config` when that variable is unset or empty.
@@ -90,6 +131,11 @@ pub fn load_settings(config_home: &Path) -> io::Result<Settings> {
         extra_library: file.extra_library.map(PathBuf::from),
         autostart_asked: file.autostart_asked,
         autostart: file.autostart,
+        update_channel: file
+            .update_channel
+            .as_deref()
+            .and_then(UpdateChannel::parse)
+            .unwrap_or_default(),
     })
 }
 
@@ -106,6 +152,10 @@ pub fn save_settings(config_home: &Path, settings: &Settings) -> io::Result<()> 
             .map(|path| path.to_string_lossy().into_owned()),
         autostart_asked: settings.autostart_asked,
         autostart: settings.autostart,
+        update_channel: match settings.update_channel {
+            UpdateChannel::Release => None,
+            channel => Some(channel.as_str().to_string()),
+        },
     };
     let body = serde_json::to_string(&file)
         .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
@@ -158,6 +208,14 @@ pub fn set_autostart(config_home: &Path, enabled: bool) -> io::Result<Settings> 
     settings.autostart_asked = Some(true);
     settings.autostart = Some(enabled);
     write_autostart_file(config_home, enabled)?;
+    save_settings(config_home, &settings)?;
+    Ok(settings)
+}
+
+/// Store the update channel. `release` is omitted from the file.
+pub fn set_update_channel(config_home: &Path, channel: UpdateChannel) -> io::Result<Settings> {
+    let mut settings = load_settings(config_home)?;
+    settings.update_channel = channel;
     save_settings(config_home, &settings)?;
     Ok(settings)
 }

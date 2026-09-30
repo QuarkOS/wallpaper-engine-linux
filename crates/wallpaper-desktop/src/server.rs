@@ -27,7 +27,13 @@ use wallpaper_play::{
 };
 
 use crate::library::{collect_library, decode_id, encode_id, resolve_workshop, LibraryCard};
-use crate::settings::{load_settings, set_autostart, set_extra_library, Settings};
+use crate::settings::{
+    load_settings, set_autostart, set_extra_library, set_update_channel, Settings, UpdateChannel,
+};
+use crate::updates::{
+    check_channel, download_failure, fetch_bytes, hash_failure, install_archive, sha256sums_match,
+    CheckOutcome, UpdateOffer, ARCHIVE_NAME, GITHUB_RELEASES_URL,
+};
 
 const INDEX_HTML: &str = include_str!("../../../ui/index.html");
 const APP_JS: &str = include_str!("../../../ui/app.js");
@@ -46,6 +52,10 @@ struct State {
     /// `$XDG_DATA_DIRS`.
     plasma_data_dirs: Option<Vec<PathBuf>>,
     settings_lock: Mutex<()>,
+    version: String,
+    releases_url: Option<String>,
+    install_dir: Option<PathBuf>,
+    update_offer: Mutex<Option<UpdateOffer>>,
 }
 
 /// A loopback server. Dropping it stops the accept thread.
@@ -85,6 +95,12 @@ pub struct DesktopOptions {
     /// Replaces the live-plugin search. `None` uses the wallpaper-play search,
     /// including `WALLPAPER_PLASMA_DATA_DIRS`.
     pub plasma_data_dirs: Option<Vec<PathBuf>>,
+    /// Version compared with the selected release tag.
+    pub version: String,
+    /// GitHub releases URL, or a fixture. `None` uses the public repository.
+    pub releases_url: Option<String>,
+    /// Directory that receives unpacked binaries. `None` uses the executable directory.
+    pub install_dir: Option<PathBuf>,
 }
 
 /// Bind `127.0.0.1` and serve until [`Server`] is dropped.
@@ -102,6 +118,10 @@ pub fn serve(options: DesktopOptions) -> io::Result<Server> {
         players: options.players,
         plasma_data_dirs: options.plasma_data_dirs,
         settings_lock: Mutex::new(()),
+        version: options.version,
+        releases_url: options.releases_url,
+        install_dir: options.install_dir,
+        update_offer: Mutex::new(None),
     });
     let thread = thread::spawn(move || accept_loop(listener, stop_flag, state));
     Ok(Server {
@@ -177,6 +197,9 @@ fn dispatch(stream: &mut TcpStream, state: &State, request: &Request) -> io::Res
         ("GET", "/api/settings") => settings(stream, state),
         ("POST", "/api/library/extra") => add_extra(stream, state, &request.body),
         ("POST", "/api/autostart") => autostart(stream, state, &request.body),
+        ("POST", "/api/updates/channel") => update_channel(stream, state, &request.body),
+        ("POST", "/api/updates/check") => check_for_update(stream, state),
+        ("POST", "/api/updates/download") => download_update(stream, state),
         ("POST", "/api/play") => play(stream, state, &request.body),
         ("GET", path) if path.starts_with("/api/preview/") => preview(
             stream,
@@ -229,10 +252,10 @@ fn item_body(card: &LibraryCard) -> ItemBody {
 
 fn settings(stream: &mut TcpStream, state: &State) -> io::Result<()> {
     let settings = read_settings(state);
-    write_json(stream, 200, &settings_body(&settings))
+    write_json(stream, 200, &settings_body(&settings, &state.version))
 }
 
-fn settings_body(settings: &Settings) -> SettingsBody {
+fn settings_body(settings: &Settings, version: &str) -> SettingsBody {
     SettingsBody {
         extra_library: settings
             .extra_library
@@ -240,6 +263,8 @@ fn settings_body(settings: &Settings) -> SettingsBody {
             .map(|path| path.display().to_string()),
         autostart_asked: settings.autostart_asked == Some(true),
         autostart: settings.autostart_enabled(),
+        update_channel: settings.update_channel.as_str().to_string(),
+        version: version.to_string(),
     }
 }
 
@@ -331,6 +356,223 @@ fn autostart(stream: &mut TcpStream, state: &State, body: &[u8]) -> io::Result<(
                 error: Some(error.to_string()),
             },
         ),
+    }
+}
+
+fn update_channel(stream: &mut TcpStream, state: &State, body: &[u8]) -> io::Result<()> {
+    let channel = match serde_json::from_slice::<ChannelRequest>(body) {
+        Ok(request) => match UpdateChannel::parse(request.channel.trim()) {
+            Some(channel) => channel,
+            None => {
+                return write_json(
+                    stream,
+                    400,
+                    &ChannelBody {
+                        ok: false,
+                        update_channel: None,
+                        error: Some(
+                            "update channel must be release, preview, or nightly".to_string(),
+                        ),
+                    },
+                );
+            }
+        },
+        Err(_) => {
+            return write_json(
+                stream,
+                400,
+                &ChannelBody {
+                    ok: false,
+                    update_channel: None,
+                    error: Some("update channel request needs channel".to_string()),
+                },
+            );
+        }
+    };
+    let _guard = state
+        .settings_lock
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    clear_offer(state);
+    match set_update_channel(&state.config_home, channel) {
+        Ok(settings) => write_json(
+            stream,
+            200,
+            &ChannelBody {
+                ok: true,
+                update_channel: Some(settings.update_channel.as_str().to_string()),
+                error: None,
+            },
+        ),
+        Err(error) => write_json(
+            stream,
+            400,
+            &ChannelBody {
+                ok: false,
+                update_channel: None,
+                error: Some(error.to_string()),
+            },
+        ),
+    }
+}
+
+fn check_for_update(stream: &mut TcpStream, state: &State) -> io::Result<()> {
+    let channel = read_settings(state).update_channel;
+    let url = state
+        .releases_url
+        .clone()
+        .unwrap_or_else(|| GITHUB_RELEASES_URL.to_string());
+    let outcome = match fetch_bytes(&url) {
+        Ok(body) => check_channel(&body, channel, &state.version),
+        Err(message) => CheckOutcome::Failed(message),
+    };
+    let mut offer = state
+        .update_offer
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *offer = match &outcome {
+        CheckOutcome::Available(offer) => Some(offer.clone()),
+        _ => None,
+    };
+    drop(offer);
+    write_json(stream, 200, &check_body(channel, &state.version, &outcome))
+}
+
+fn download_update(stream: &mut TcpStream, state: &State) -> io::Result<()> {
+    let channel = read_settings(state).update_channel;
+    let offer = {
+        let guard = state
+            .update_offer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        guard.clone()
+    };
+    let Some(offer) = offer.filter(|offer| offer.channel == channel) else {
+        return write_json(
+            stream,
+            200,
+            &DownloadBody {
+                ok: false,
+                state: "error",
+                message: None,
+                path: None,
+                error: Some("Check for updates before downloading.".to_string()),
+            },
+        );
+    };
+    let archive = match fetch_bytes(&offer.archive_url) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return write_json(
+                stream,
+                200,
+                &DownloadBody {
+                    ok: false,
+                    state: "error",
+                    message: None,
+                    path: None,
+                    error: Some(download_failure()),
+                },
+            );
+        }
+    };
+    let sums = match fetch_bytes(&offer.sums_url) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return write_json(
+                stream,
+                200,
+                &DownloadBody {
+                    ok: false,
+                    state: "error",
+                    message: None,
+                    path: None,
+                    error: Some(download_failure()),
+                },
+            );
+        }
+    };
+    let sums = String::from_utf8_lossy(&sums);
+    if !sha256sums_match(&sums, ARCHIVE_NAME, &archive) {
+        return write_json(
+            stream,
+            200,
+            &DownloadBody {
+                ok: false,
+                state: "error",
+                message: None,
+                path: None,
+                error: Some(hash_failure()),
+            },
+        );
+    }
+    let install_dir = install_directory(state);
+    let data_dir = state.config_home.join("wallpaper");
+    match install_archive(&archive, &install_dir, &data_dir) {
+        Ok(outcome) => write_json(
+            stream,
+            200,
+            &DownloadBody {
+                ok: true,
+                state: outcome.state(),
+                message: Some(outcome.message()),
+                path: outcome.path().map(|path| path.display().to_string()),
+                error: None,
+            },
+        ),
+        Err(error) => write_json(
+            stream,
+            200,
+            &DownloadBody {
+                ok: false,
+                state: "error",
+                message: None,
+                path: None,
+                error: Some(error),
+            },
+        ),
+    }
+}
+
+fn clear_offer(state: &State) {
+    let mut offer = state
+        .update_offer
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *offer = None;
+}
+
+fn install_directory(state: &State) -> PathBuf {
+    if let Some(dir) = &state.install_dir {
+        return dir.clone();
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn check_body(channel: UpdateChannel, current: &str, outcome: &CheckOutcome) -> UpdateBody {
+    let (version, notes, error) = match outcome {
+        CheckOutcome::Available(offer) => {
+            (Some(offer.tag.clone()), Some(offer.notes.clone()), None)
+        }
+        CheckOutcome::Current { tag } => (Some(tag.clone()), None, None),
+        CheckOutcome::None => (
+            None,
+            None,
+            Some(format!("No release on the {} channel.", channel.as_str())),
+        ),
+        CheckOutcome::Failed(message) => (None, None, Some(message.clone())),
+    };
+    UpdateBody {
+        ok: outcome.ok(),
+        state: outcome.state(),
+        channel: channel.as_str().to_string(),
+        current: current.to_string(),
+        version,
+        notes,
+        error,
     }
 }
 
@@ -568,6 +810,49 @@ struct SettingsBody {
     #[serde(rename = "autostartAsked")]
     autostart_asked: bool,
     autostart: bool,
+    #[serde(rename = "updateChannel")]
+    update_channel: String,
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct ChannelRequest {
+    channel: String,
+}
+
+#[derive(Serialize)]
+struct ChannelBody {
+    ok: bool,
+    #[serde(rename = "updateChannel", skip_serializing_if = "Option::is_none")]
+    update_channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UpdateBody {
+    ok: bool,
+    state: &'static str,
+    channel: String,
+    current: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DownloadBody {
+    ok: bool,
+    state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]

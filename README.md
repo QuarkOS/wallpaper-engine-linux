@@ -148,6 +148,16 @@ wallpaper play 1234567890
 wallpaper play 1234567890 --sound
 ```
 
+## Updates
+
+The desktop window checks [GitHub releases](https://github.com/QuarkOS/wallpaper-engine-linux/releases) after it opens. That check does not wait in front of the first-launch login question. Settings stores the channel. The default is release.
+
+- Release is the newest release whose tag starts with `v` and is not a prerelease.
+- Preview is the newest prerelease whose tag starts with `preview-`.
+- Nightly is the newest prerelease whose tag starts with `nightly-`.
+
+A newer tag on that channel offers the version and a short note. Nothing downloads until you confirm. The file is `wallpaper-engine-linux-x86_64.tar.gz`, and it is kept only when `sha256sums.txt` lists the same sha256. When the program directory is writable, `wallpaper` and `wallpaper-desktop` are unpacked there for the next launch. Otherwise the verified archive stays in the settings directory (`$XDG_CONFIG_HOME/wallpaper`, or `~/.config/wallpaper`). The window does not ask for a root install.
+
 ## License
 
 MIT

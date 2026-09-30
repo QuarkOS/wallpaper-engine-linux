@@ -25,6 +25,21 @@
     <h2>Settings</h2>
     <label for="autostart">Start on login</label>
     <input id="autostart" type="checkbox">
+    <div id="updates" hidden>
+      <label for="update-channel">Update channel</label>
+      <select id="update-channel">
+        <option value="release">Release</option>
+        <option value="preview">Preview</option>
+        <option value="nightly">Nightly</option>
+      </select>
+      <button type="button" id="check-updates">Check for updates</button>
+      <p id="update-status" role="status"></p>
+      <div id="update-offer" hidden>
+        <p id="update-version"></p>
+        <p id="update-note"></p>
+        <button type="button" id="update-download">Download update</button>
+      </div>
+    </div>
   </section>
   <div id="autostart-prompt" hidden>
     <p id="autostart-question">Start Wallpapers when you log in?</p>

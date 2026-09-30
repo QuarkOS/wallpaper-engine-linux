@@ -1,16 +1,19 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use wallpaper_desktop::{
-    autostart_desktop_path, collect_library, load_settings, serve, set_autostart,
-    set_extra_library, settings_path, DesktopOptions, Server,
+    autostart_desktop_path, collect_library, load_settings, pack_gzip_tar, serve, set_autostart,
+    set_extra_library, set_update_channel, settings_path, sha256_hex, DesktopOptions, Server,
+    UpdateChannel, ARCHIVE_NAME, NEXT_LAUNCH_MESSAGE, SUMS_NAME,
 };
 use wallpaper_play::{
     plasma_scene_wallpaper_dir, Players, LIVE_SCENE_PLUGIN_ID, PLASMA_SCENE_WALLPAPER_PLUGIN,
@@ -137,12 +140,17 @@ fn players_for(stubs: &Stubs) -> Players {
 }
 
 fn options(scratch: &Path, steam_root: PathBuf, players: Players) -> DesktopOptions {
+    let install = scratch.join("install");
+    fs::create_dir_all(&install).expect("install dir");
     DesktopOptions {
         steam_root: Some(steam_root),
         home: Some(scratch.join("home")),
         config_home: scratch.join("config"),
         players,
         plasma_data_dirs: Some(vec![scratch.join("no-live-plugin")]),
+        version: "0.1.0".to_string(),
+        releases_url: None,
+        install_dir: Some(install),
     }
 }
 
@@ -547,6 +555,7 @@ fn desktop_without_a_display_serves_and_stays_up() {
         .args(["--steam-root", &steam_root])
         .env("HOME", &scratch)
         .env("XDG_CONFIG_HOME", &config)
+        .env_remove("WALLPAPER_VERSION")
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
         .stdout(Stdio::piped())
@@ -580,6 +589,8 @@ fn desktop_without_a_display_serves_and_stays_up() {
     let settings: serde_json::Value = serde_json::from_str(&body).expect("settings json");
     assert_eq!(settings["autostartAsked"], false);
     assert_eq!(settings["autostart"], false);
+    assert_eq!(settings["updateChannel"], "release");
+    assert_eq!(settings["version"], "0.1.0");
     match running.child.try_wait() {
         Ok(None) => {}
         Ok(Some(status)) => panic!("desktop exited without a display: {status}"),
@@ -664,6 +675,9 @@ fn library_live_scene_is_false_without_the_plugin_and_play_stays_partial() {
         config_home: scratch.join("config"),
         players,
         plasma_data_dirs: Some(vec![search]),
+        version: "0.1.0".to_string(),
+        releases_url: None,
+        install_dir: Some(scratch.join("install")),
     });
 
     let (status, body) = get(server.port(), "/api/library");
@@ -725,6 +739,9 @@ fn library_live_scene_is_true_when_the_plugin_directory_exists() {
         config_home: scratch.join("config"),
         players,
         plasma_data_dirs: Some(vec![search]),
+        version: "0.1.0".to_string(),
+        releases_url: None,
+        install_dir: Some(scratch.join("install")),
     });
 
     let (status, body) = get(server.port(), "/api/library");
@@ -749,5 +766,540 @@ fn library_live_scene_is_true_when_the_plugin_directory_exists() {
     assert!(!web_record.exists(), "live scene play spawned web");
 
     drop(server);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+fn post_empty(port: u16, path: &str) -> (u16, String) {
+    exchange(
+        port,
+        &format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"),
+    )
+}
+
+struct Fixture {
+    port: u16,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
+    }
+}
+
+fn bind_fixture() -> (TcpListener, u16) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("fixture bind");
+    let port = listener.local_addr().expect("fixture port").port();
+    (listener, port)
+}
+
+fn serve_fixture(listener: TcpListener, routes: HashMap<String, Vec<u8>>) -> Fixture {
+    serve_fixture_with(listener, routes, Duration::from_millis(0))
+}
+
+fn serve_fixture_with(
+    listener: TcpListener,
+    routes: HashMap<String, Vec<u8>>,
+    delay: Duration,
+) -> Fixture {
+    let port = listener.local_addr().expect("fixture port").port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    thread::spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(_) => continue,
+            };
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        buf.extend_from_slice(&chunk[..count]);
+                        if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let text = String::from_utf8_lossy(&buf);
+            let path = text
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .split('?')
+                .next()
+                .unwrap_or("/");
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+            let body = routes.get(path).cloned().unwrap_or_default();
+            let status = if routes.contains_key(path) { 200 } else { 404 };
+            let header = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    Fixture { port, stop }
+}
+
+fn release_json(items: &[serde_json::Value]) -> Vec<u8> {
+    serde_json::Value::Array(items.to_vec())
+        .to_string()
+        .into_bytes()
+}
+
+fn release_item(
+    tag: &str,
+    prerelease: bool,
+    published: &str,
+    notes: &str,
+    port: u16,
+) -> serde_json::Value {
+    serde_json::json!({
+        "tag_name": tag,
+        "prerelease": prerelease,
+        "draft": false,
+        "body": notes,
+        "published_at": published,
+        "assets": [
+            {
+                "name": ARCHIVE_NAME,
+                "browser_download_url": format!("http://127.0.0.1:{port}/{ARCHIVE_NAME}")
+            },
+            {
+                "name": SUMS_NAME,
+                "browser_download_url": format!("http://127.0.0.1:{port}/{SUMS_NAME}")
+            }
+        ]
+    })
+}
+
+#[test]
+fn update_channel_defaults_to_release_and_survives_other_settings() {
+    let scratch = scratch_dir();
+    let config = scratch.join("config");
+    let fresh = load_settings(&config).expect("defaults");
+    assert_eq!(fresh.update_channel, UpdateChannel::Release);
+
+    let preview = set_update_channel(&config, UpdateChannel::Preview).expect("preview");
+    assert_eq!(preview.update_channel, UpdateChannel::Preview);
+    assert_eq!(
+        fs::read_to_string(settings_path(&config)).expect("preview file"),
+        "{\"updateChannel\":\"preview\"}\n"
+    );
+
+    set_autostart(&config, false).expect("decline");
+    let text = fs::read_to_string(settings_path(&config)).expect("kept channel");
+    assert_eq!(
+        text,
+        "{\"autostartAsked\":true,\"autostart\":false,\"updateChannel\":\"preview\"}\n"
+    );
+
+    fs::write(settings_path(&config), "{\"updateChannel\":\"beta\"}\n").expect("bad channel");
+    let loaded = load_settings(&config).expect("unknown channel still loads");
+    assert_eq!(loaded.update_channel, UpdateChannel::Release);
+
+    set_update_channel(&config, UpdateChannel::Release).expect("back to release");
+    let text = fs::read_to_string(settings_path(&config)).expect("release omitted");
+    assert!(!text.contains("updateChannel"), "{text}");
+
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn wallpaper_version_env_overrides_the_crate_version() {
+    let scratch = scratch_dir();
+    let config = scratch.join("config");
+    let steam_root = scratch.join("steam-root");
+    fs::create_dir_all(&steam_root).expect("steam root");
+    let steam_root = steam_root.display().to_string();
+    let mut child = Command::new(desktop_bin())
+        .args(["--steam-root", &steam_root])
+        .env("HOME", &scratch)
+        .env("XDG_CONFIG_HOME", &config)
+        .env("WALLPAPER_VERSION", "9.9.9")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn wallpaper desktop");
+    let stdout = child.stdout.take().expect("stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = std::io::BufRead::read_line(&mut reader, &mut line);
+        let _ = sender.send(line);
+    });
+    let line = receiver.recv_timeout(Duration::from_secs(15)).expect("url");
+    let port: u16 = line
+        .trim()
+        .trim_start_matches("http://127.0.0.1:")
+        .parse()
+        .expect("port");
+    let running = RunningDesktop { child, port };
+    let (status, body) = get(running.port, "/api/settings");
+    assert_eq!(status, 200, "{body}");
+    let settings: serde_json::Value = serde_json::from_str(&body).expect("settings");
+    assert_eq!(settings["version"], "9.9.9");
+    assert_eq!(settings["updateChannel"], "release");
+}
+
+#[test]
+fn settings_stay_up_while_an_update_check_is_stuck() {
+    let scratch = scratch_dir();
+    let (listener, _) = bind_fixture();
+    let mut routes = HashMap::new();
+    routes.insert("/releases".to_string(), b"[]".to_vec());
+    let fixture = serve_fixture_with(listener, routes, Duration::from_secs(3));
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.releases_url = Some(format!("http://127.0.0.1:{}/releases", fixture.port));
+    let server = serve_options(desktop);
+    let port = server.port();
+    let checker = thread::spawn(move || post_empty(port, "/api/updates/check"));
+
+    let started = Instant::now();
+    let (status, body) = get(server.port(), "/api/settings");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "settings waited on the update check"
+    );
+    assert_eq!(status, 200, "{body}");
+    let settings: serde_json::Value = serde_json::from_str(&body).expect("settings");
+    assert_eq!(settings["autostartAsked"], false);
+    assert_eq!(settings["updateChannel"], "release");
+
+    let (status, body) = checker.join().expect("check thread");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("check");
+    assert_eq!(payload["state"], "none");
+    drop(server);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn github_channels_offer_a_newer_build_and_keep_a_verified_download() {
+    let scratch = scratch_dir();
+    let archive = pack_gzip_tar(&[
+        ("bundle/wallpaper", b"synthetic-wallpaper"),
+        ("bundle/wallpaper-desktop", b"synthetic-desktop"),
+    ])
+    .expect("pack");
+    let digest = sha256_hex(&archive);
+    let sums = format!("{digest}  {ARCHIVE_NAME}\n");
+    let (listener, fixture_port) = bind_fixture();
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/releases".to_string(),
+        release_json(&[
+            release_item(
+                "vanilla",
+                false,
+                "2026-09-06T00:00:00Z",
+                "ignore",
+                fixture_port,
+            ),
+            release_item(
+                "v0.9.0",
+                true,
+                "2026-09-05T00:00:00Z",
+                "prerelease v",
+                fixture_port,
+            ),
+            release_item(
+                "v0.2.0",
+                false,
+                "2026-09-01T00:00:00Z",
+                "Stable playback.",
+                fixture_port,
+            ),
+            release_item(
+                "v0.8.0",
+                false,
+                "2026-08-01T00:00:00Z",
+                "older",
+                fixture_port,
+            ),
+            release_item(
+                "preview-0.3.0",
+                true,
+                "2026-09-03T00:00:00Z",
+                "Preview note.",
+                fixture_port,
+            ),
+            release_item(
+                "preview-0.4.0",
+                false,
+                "2026-09-04T00:00:00Z",
+                "not preview",
+                fixture_port,
+            ),
+            release_item(
+                "nightly-0.4.0",
+                true,
+                "2026-09-04T00:00:00Z",
+                "Nightly note.",
+                fixture_port,
+            ),
+            release_item(
+                "nightly-9.0.0",
+                false,
+                "2026-09-07T00:00:00Z",
+                "not nightly",
+                fixture_port,
+            ),
+        ]),
+    );
+    routes.insert(format!("/{ARCHIVE_NAME}"), archive);
+    routes.insert(format!("/{SUMS_NAME}"), sums.into_bytes());
+    let fixture = serve_fixture(listener, routes);
+
+    let install = scratch.join("install");
+    fs::create_dir_all(&install).expect("install");
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.version = "0.1.0".to_string();
+    desktop.install_dir = Some(install.clone());
+    desktop.releases_url = Some(format!("http://127.0.0.1:{}/releases", fixture.port));
+    let server = serve_options(desktop);
+    let port = server.port();
+
+    let (status, body) = post_empty(port, "/api/updates/download");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("early download");
+    assert_eq!(payload["ok"], false);
+    assert!(payload["error"].as_str().unwrap_or("").contains("Check"));
+    assert!(!install.join("wallpaper").exists());
+
+    let (status, body) = post_empty(port, "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("release check");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["state"], "available");
+    assert_eq!(payload["channel"], "release");
+    assert_eq!(payload["current"], "0.1.0");
+    assert_eq!(payload["version"], "v0.2.0");
+    assert_eq!(payload["notes"], "Stable playback.");
+
+    let (status, body) = post_empty(port, "/api/updates/download");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("download");
+    assert_eq!(payload["ok"], true, "{body}");
+    assert_eq!(payload["state"], "installed");
+    assert_eq!(payload["message"], NEXT_LAUNCH_MESSAGE);
+    assert_eq!(
+        fs::read(install.join("wallpaper")).expect("wallpaper"),
+        b"synthetic-wallpaper"
+    );
+    assert_eq!(
+        fs::read(install.join("wallpaper-desktop")).expect("desktop"),
+        b"synthetic-desktop"
+    );
+    assert!(!scratch.join("config/wallpaper").join(ARCHIVE_NAME).exists());
+
+    let (status, body) = post_json(port, "/api/updates/channel", r#"{"channel":"preview"}"#);
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = post_empty(port, "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("preview");
+    assert_eq!(payload["version"], "preview-0.3.0");
+    assert_eq!(payload["notes"], "Preview note.");
+    assert_eq!(payload["channel"], "preview");
+
+    let (status, body) = post_json(port, "/api/updates/channel", r#"{"channel":"nightly"}"#);
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = post_empty(port, "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("nightly");
+    assert_eq!(payload["version"], "nightly-0.4.0");
+    assert_eq!(payload["notes"], "Nightly note.");
+
+    let saved = fs::read_to_string(settings_path(&scratch.join("config"))).expect("settings");
+    assert!(saved.contains("\"updateChannel\":\"nightly\""), "{saved}");
+
+    let (status, body) = post_json(port, "/api/updates/channel", r#"{"channel":"beta"}"#);
+    assert_eq!(status, 400, "{body}");
+    let still = fs::read_to_string(settings_path(&scratch.join("config"))).expect("unchanged");
+    assert!(still.contains("\"updateChannel\":\"nightly\""), "{still}");
+
+    drop(server);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn a_failed_hash_or_closed_channel_is_visible_and_keeps_nothing() {
+    let scratch = scratch_dir();
+    let archive = pack_gzip_tar(&[
+        ("wallpaper", b"synthetic-wallpaper"),
+        ("wallpaper-desktop", b"synthetic-desktop"),
+    ])
+    .expect("pack");
+    let (listener, fixture_port) = bind_fixture();
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/releases".to_string(),
+        release_json(&[release_item(
+            "v0.4.0",
+            false,
+            "2026-09-01T00:00:00Z",
+            "Bad hash.",
+            fixture_port,
+        )]),
+    );
+    routes.insert(format!("/{ARCHIVE_NAME}"), archive);
+    routes.insert(
+        format!("/{SUMS_NAME}"),
+        format!(
+            "0000000000000000000000000000000000000000000000000000000000000000  {ARCHIVE_NAME}\n"
+        )
+        .into_bytes(),
+    );
+    let fixture = serve_fixture(listener, routes);
+    let install = scratch.join("install");
+    fs::create_dir_all(&install).expect("install");
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.install_dir = Some(install.clone());
+    desktop.releases_url = Some(format!("http://127.0.0.1:{}/releases", fixture.port));
+    let server = serve_options(desktop);
+    let port = server.port();
+
+    let (status, body) = post_empty(port, "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("offer");
+    assert_eq!(payload["state"], "available");
+    assert_eq!(payload["version"], "v0.4.0");
+
+    let (status, body) = post_empty(port, "/api/updates/download");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("hash");
+    assert_eq!(payload["ok"], false);
+    assert!(
+        payload["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("sha256sums.txt"),
+        "{body}"
+    );
+    assert!(!install.join("wallpaper").exists());
+    assert!(!scratch.join("config/wallpaper").join(ARCHIVE_NAME).exists());
+    assert!(files_named(&scratch.join("config"), ARCHIVE_NAME).is_empty());
+
+    drop(server);
+    drop(fixture);
+
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.releases_url = Some("http://127.0.0.1:1/releases".to_string());
+    let server = serve_options(desktop);
+    let (status, body) = post_empty(server.port(), "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("network");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["state"], "error");
+    assert_eq!(payload["error"], "Could not check for updates.");
+
+    let (status, body) = get(server.port(), "/api/library");
+    assert_eq!(status, 200, "{body}");
+    drop(server);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn an_unwritable_install_dir_saves_the_archive_and_names_the_path() {
+    let scratch = scratch_dir();
+    let archive = pack_gzip_tar(&[
+        ("wallpaper", b"synthetic-wallpaper"),
+        ("wallpaper-desktop", b"synthetic-desktop"),
+    ])
+    .expect("pack");
+    let digest = sha256_hex(&archive);
+    let (listener, fixture_port) = bind_fixture();
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/releases".to_string(),
+        release_json(&[release_item(
+            "v1.2.0",
+            false,
+            "2026-09-08T00:00:00Z",
+            "Saved aside.",
+            fixture_port,
+        )]),
+    );
+    routes.insert(format!("/{ARCHIVE_NAME}"), archive.clone());
+    routes.insert(
+        format!("/{SUMS_NAME}"),
+        format!("{digest}  {ARCHIVE_NAME}\n").into_bytes(),
+    );
+    let fixture = serve_fixture(listener, routes);
+    let install = scratch.join("locked-install");
+    fs::create_dir_all(&install).expect("install");
+    let mut permissions = fs::metadata(&install).expect("meta").permissions();
+    permissions.set_mode(0o555);
+    fs::set_permissions(&install, permissions).expect("chmod");
+
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.install_dir = Some(install.clone());
+    desktop.releases_url = Some(format!("http://127.0.0.1:{}/releases", fixture.port));
+    desktop.version = "0.1.0".to_string();
+    let server = serve_options(desktop);
+
+    let (status, body) = post_empty(server.port(), "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = post_empty(server.port(), "/api/updates/download");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("saved");
+    assert_eq!(payload["ok"], true, "{body}");
+    assert_eq!(payload["state"], "saved");
+    let path = scratch.join("config/wallpaper").join(ARCHIVE_NAME);
+    assert_eq!(payload["path"], path.display().to_string());
+    assert!(payload["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains(&path.display().to_string()));
+    assert_eq!(fs::read(&path).expect("kept archive"), archive);
+    assert!(!install.join("wallpaper").exists());
+
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.version = "9.0.0".to_string();
+    desktop.releases_url = Some(format!("http://127.0.0.1:{}/releases", fixture.port));
+    let current = serve_options(desktop);
+    let (status, body) = post_empty(current.port(), "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("current");
+    assert_eq!(payload["state"], "current");
+    assert_eq!(payload["version"], "v1.2.0");
+
+    let mut desktop = options(&scratch, scratch.join("steam-root"), Players::default());
+    desktop.releases_url = Some(format!("http://127.0.0.1:{}/releases", fixture.port));
+    let nightly = serve_options(desktop);
+    let (status, body) = post_json(
+        nightly.port(),
+        "/api/updates/channel",
+        r#"{"channel":"nightly"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = post_empty(nightly.port(), "/api/updates/check");
+    assert_eq!(status, 200, "{body}");
+    let payload: serde_json::Value = serde_json::from_str(&body).expect("empty nightly");
+    assert_eq!(payload["state"], "none");
+    assert_eq!(payload["error"], "No release on the nightly channel.");
+
+    drop(nightly);
+    drop(current);
+    let mut permissions = fs::metadata(&install).expect("meta").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&install, permissions).expect("restore");
     let _ = fs::remove_dir_all(&scratch);
 }

@@ -7,9 +7,13 @@ license = "MIT"
 publish = false
 
 [dependencies]
+flate2 = "1"
+minreq = { version = "2.12", default-features = false, features = ["https"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tao = "=0.36.0"
+tar = "0.4"
 wallpaper-import = { path = "../wallpaper-import" }
 wallpaper-play = { path = "../wallpaper-play" }
 wry = "=0.56.1"
