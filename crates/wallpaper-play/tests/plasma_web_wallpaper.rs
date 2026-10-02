@@ -9,10 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use wallpaper_import::scan_library;
 use wallpaper_play::{
-    install_plasma_video_wallpaper, install_plasma_web_wallpaper, launch, plasma_wallpaper_dir,
-    plasma_web_wallpaper_dir, plasma_web_wallpaper_script, LaunchError, PlayPlan, Players,
-    PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE, PLASMA_VIDEO_WALLPAPER_PLUGIN,
-    PLASMA_WEB_WALLPAPER_PLUGIN,
+    install_plasma_video_wallpaper, install_plasma_web_wallpaper, launch, plan_playback,
+    plasma_wallpaper_dir, plasma_web_wallpaper_dir, plasma_web_wallpaper_script, LaunchError,
+    PlayPlan, Players, PLASMA_DBUS_METHOD, PLASMA_DBUS_PATH, PLASMA_DBUS_SERVICE,
+    PLASMA_VIDEO_WALLPAPER_PLUGIN, PLASMA_WEB_WALLPAPER_PLUGIN,
 };
 
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -151,6 +151,55 @@ fn assert_web_package(data_home: &Path) {
     assert!(
         qml.contains("audioMuted: root.configuration.Muted !== false"),
         "wallpaper does not mute when Muted is true: {qml}"
+    );
+    assert!(
+        qml.contains("settings.localContentCanAccessFileUrls: true"),
+        "wallpaper blocks local file access: {qml}"
+    );
+    assert!(
+        qml.contains("settings.localContentCanAccessRemoteUrls: true"),
+        "wallpaper blocks remote assets from the local page: {qml}"
+    );
+    let local_access = qml
+        .find("settings.localContentCanAccessFileUrls: true")
+        .expect("local access setting");
+    let url_assign = qml.find("page.url = next").expect("page url assignment");
+    assert!(
+        local_access < url_assign,
+        "page URL is assigned before local file access is enabled"
+    );
+    assert!(
+        qml.contains("width: root.width"),
+        "web view does not use the wallpaper width: {qml}"
+    );
+    assert!(
+        qml.contains("height: root.height"),
+        "web view does not use the wallpaper height: {qml}"
+    );
+    assert!(
+        !qml.contains("url: root.configuration.PageUrl || \"\""),
+        "empty PageUrl replaces the loaded page: {qml}"
+    );
+    let empty_guard = qml.find("if (next === \"\")").expect("empty url guard");
+    assert!(
+        empty_guard < url_assign,
+        "empty page URL is applied before the guard"
+    );
+    assert!(
+        !qml.contains("backgroundColor: \"black\""),
+        "opaque black fill is the desktop when the page has not painted: {qml}"
+    );
+    assert!(
+        qml.contains("backgroundColor: \"transparent\""),
+        "web view does not let the page paint its own background: {qml}"
+    );
+    assert!(
+        qml.contains("LifecycleState.Active"),
+        "web view can be discarded and paint nothing: {qml}"
+    );
+    assert!(
+        !qml.contains("about:blank"),
+        "wallpaper navigates to a blank page: {qml}"
     );
     assert!(
         !qml.contains("xdg-open"),
@@ -644,4 +693,55 @@ fn wallpaper_play_video_player_does_not_force_web_to_xdg_open() {
         "--video-player spawned mpv for a web wallpaper"
     );
     let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn sibling_assets_are_on_the_page_url_plasmashell_selects() {
+    let root = scratch_dir();
+    let project = root.join("synthetic-web");
+    write_file(
+        &project.join("project.json"),
+        r#"{"type":"web","file":"index.html","title":"Synthetic Web"}"#,
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><script src=\"neighbor.js\"></script><img src=\"neighbor.png\" alt=\"\">",
+    );
+    write_file(&project.join("neighbor.js"), "/* synthetic */");
+    write_file(&project.join("neighbor.png"), "synthetic image");
+
+    let library = scan_library(&root).expect("scan");
+    let plan = plan_playback(&library[0]).expect("web plan");
+    let PlayPlan::Web { url } = plan else {
+        panic!("expected a web plan");
+    };
+    let page = project.join("index.html");
+    assert_eq!(url, format!("file://{}", page.display()));
+    assert!(!url.is_empty(), "plasmashell would load an empty page");
+    for name in ["neighbor.js", "neighbor.png"] {
+        let (directory, _) = url.rsplit_once('/').expect("page url");
+        let sibling = format!("{directory}/{name}");
+        assert!(
+            Path::new(sibling.trim_start_matches("file://")).is_file(),
+            "{name} is not loadable from {url}"
+        );
+    }
+
+    let script = plasma_web_wallpaper_script(&url, true);
+    assert!(
+        script.contains("desktop.wallpaperPlugin = \"linux.wallpaper.web\""),
+        "evaluateScript does not select the web wallpaper: {script}"
+    );
+    assert!(
+        script.contains(&format!("writeConfig(\"PageUrl\", \"{url}\")")),
+        "evaluateScript does not write the page URL: {script}"
+    );
+    assert!(
+        !script.contains("linux.wallpaper.video"),
+        "web script selects the video plugin: {script}"
+    );
+
+    install_plasma_web_wallpaper(&root.join("data")).expect("install web");
+    assert_web_package(&root.join("data"));
+    let _ = fs::remove_dir_all(&root);
 }

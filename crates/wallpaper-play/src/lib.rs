@@ -6,8 +6,11 @@
 //! loops the file with Qt Multimedia, and Plasma Shell scripting selects that
 //! plugin on every desktop. Pass an explicit video player to spawn `mpv`
 //! instead. A web plan is a muted KDE Plasma wallpaper too: a separate
-//! user-local QML plugin loads the page in Qt WebEngine. Pass an explicit
-//! web player to spawn that program with the `file://` URL instead. A scene
+//! user-local QML plugin loads one page in Qt WebEngine. That page is the
+//! HTML file named by the project, `index.html` inside a directory the
+//! project names, or an `http://` or `https://` address. Relative scripts
+//! and images resolve against a local HTML file's directory. Pass an
+//! explicit web player to spawn that program with the page URL instead. A scene
 //! plan installs `linux.wallpaper.scene` and shows visible image layers. A
 //! video texture loops muted. A still image has no audio. Particles, text,
 //! models, and scripts are not played. [`play_entry`] selects an installed
@@ -78,20 +81,25 @@ pub enum SceneVisual {
 
 /// What a desktop player should run for one library entry.
 ///
-/// Video playback loops. Web playback loads the HTML file through a `file://`
-/// URL. Scene playback shows the resolved image layers. The player does not
-/// choose a different file than the one
-/// [`resolve_media`](wallpaper_import::resolve_media) returned for video and
-/// web, or the scene resolver returned for an image layer.
+/// Video playback loops. Web playback loads one page URL. Scene playback
+/// shows the resolved image layers. The player does not choose a different
+/// file than the one [`resolve_media`](wallpaper_import::resolve_media)
+/// returned for video, or the scene resolver returned for an image layer.
+/// A web page is the HTML file the project names, `index.html` inside a
+/// directory the project names, or an `http://` or `https://` address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlayPlan {
     /// Open `file` and play it again from the start when it ends.
     ///
     /// `loops` is true. `file` is the resolved media path.
     Video { file: PathBuf, loops: bool },
-    /// Navigate a web view to this `file://` URL.
+    /// Navigate a web view to this page URL.
     ///
-    /// The URL points at the resolved HTML file.
+    /// A local project is a `file://` URL of the HTML file named by
+    /// `project.json`. Relative scripts and images resolve against that
+    /// file's directory. An `http://` or `https://` value is used as the
+    /// page address. A `file` that names a directory uses `index.html`
+    /// inside that directory.
     Web { url: String },
     /// Show scene image layers on the desktop.
     ///
@@ -153,9 +161,11 @@ impl std::error::Error for PlayError {
 
 /// Plan how a desktop player should play one library entry.
 ///
-/// Video and web entries must resolve to a file inside the project directory.
+/// Video entries must resolve to a file inside the project directory.
 /// The video plan names that file and sets `loops` so the player repeats it.
-/// The web plan is a `file://` URL for that HTML file.
+/// The web plan is the page URL for that project: a `file://` URL of the
+/// named HTML file, `index.html` when `file` is a directory, or the
+/// `http://` or `https://` address stored in `file`.
 ///
 /// A scene entry plays visible image layers from its scene file. Each layer's
 /// image path is a picture, a video, or a model JSON whose material names a
@@ -171,17 +181,80 @@ pub fn plan_playback(entry: &LibraryEntry) -> Result<PlayPlan, PlayError> {
             let file = resolve_media(entry).map_err(from_import)?;
             Ok(PlayPlan::Video { file, loops: true })
         }
-        Wallpaper::Web { .. } => {
-            let file = resolve_media(entry).map_err(from_import)?;
-            Ok(PlayPlan::Web {
-                url: file_url(&file)?,
-            })
-        }
+        Wallpaper::Web { file, .. } => plan_web(entry, file),
     }
 }
 
 fn is_scene(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("scene")
+}
+
+/// Page URL for a web project.
+///
+/// An `http://` or `https://` `file` is the page address, including when a
+/// local `index.html` also exists. Otherwise the named path must stay inside
+/// the project. A file is used as itself, so `page.html` is not replaced with
+/// `index.html`. A directory uses `index.html` inside that directory.
+/// Backslashes in a relative path are directory separators.
+fn plan_web(entry: &LibraryEntry, file: &str) -> Result<PlayPlan, PlayError> {
+    if let Some(url) = remote_page_url(file) {
+        return Ok(PlayPlan::Web { url });
+    }
+    let page = resolve_web_page(entry, file)?;
+    Ok(PlayPlan::Web {
+        url: file_url(&page)?,
+    })
+}
+
+fn remote_page_url(file: &str) -> Option<String> {
+    let url = file.trim();
+    let rest = if scheme_is(url, "https://") {
+        &url["https://".len()..]
+    } else if scheme_is(url, "http://") {
+        &url["http://".len()..]
+    } else {
+        return None;
+    };
+    if rest.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
+    }
+}
+
+fn scheme_is(url: &str, scheme: &str) -> bool {
+    url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme)
+}
+
+fn resolve_web_page(entry: &LibraryEntry, file: &str) -> Result<PathBuf, PlayError> {
+    let normalized = file.replace('\\', "/");
+    match resolve_media(&web_entry(entry, normalized.clone())) {
+        Ok(path) => Ok(path),
+        Err(ImportError::MissingMedia { path }) if path.is_dir() => {
+            resolve_media(&web_entry(entry, index_html_relative(&normalized))).map_err(from_import)
+        }
+        Err(error) => Err(from_import(error)),
+    }
+}
+
+fn web_entry(entry: &LibraryEntry, file: String) -> LibraryEntry {
+    LibraryEntry {
+        directory: entry.directory.clone(),
+        wallpaper: Wallpaper::Web {
+            file,
+            title: String::new(),
+        },
+    }
+}
+
+/// `index.html` inside the directory named by `project.json`.
+fn index_html_relative(directory_file: &str) -> String {
+    let trimmed = directory_file.trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        "index.html".to_string()
+    } else {
+        format!("{trimmed}/index.html")
+    }
 }
 
 /// Scene failures stay [`PlayError::Unsupported`]. The message does not name
@@ -382,7 +455,7 @@ impl std::error::Error for LaunchError {
 /// A web plan with [`Players::web_plasma`] set (the default) installs the
 /// user-local web wallpaper plugin and runs the same plasmashell tool. That
 /// path does not spawn [`Players::web`]. When `web_plasma` is clear, a web
-/// plan spawns `players.web` with the file URL as its only argument.
+/// plan spawns `players.web` with the page URL as its only argument.
 ///
 /// A scene plan always installs the scene wallpaper plugin and runs the
 /// plasmashell tool. It does not spawn [`Players::video`] or [`Players::web`],

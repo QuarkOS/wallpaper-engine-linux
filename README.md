@@ -125,7 +125,7 @@ wallpaper play 1234567890 --video-player /usr/bin/mpv
 
 ## Web wallpapers
 
-On KDE Plasma 6, `play` installs a web wallpaper plugin into `~/.local/share/plasma/wallpapers/linux.wallpaper.web` (or `$XDG_DATA_HOME/plasma/wallpapers/linux.wallpaper.web`) and selects it with the same Plasma Shell scripting call as a video wallpaper. The plugin loads the page in Qt WebEngine. Audio is muted. Pass `--sound` to leave it on. Installing the web plugin does not remove the video plugin.
+On KDE Plasma 6, `play` installs a web wallpaper plugin into `~/.local/share/plasma/wallpapers/linux.wallpaper.web` (or `$XDG_DATA_HOME/plasma/wallpapers/linux.wallpaper.web`) and selects it with the same Plasma Shell scripting call as a video wallpaper. The plugin loads one page in Qt WebEngine. That page is the HTML file named in `project.json`, so a script or image next to that file can load. An `http://` or `https://` project opens that address. A `file` entry that is a directory opens `index.html` inside it. The view fills the desktop. Audio is muted. Pass `--sound` to leave it on. Installing the web plugin does not remove the video plugin.
 
 `--web-player PATH` skips the Plasma wallpaper for that web item and runs the program with the file URL. The default program for that override is `xdg-open`.
 

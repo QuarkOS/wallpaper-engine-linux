@@ -257,3 +257,241 @@ fn escaped_path_is_not_a_plan() {
     }
     let _ = fs::remove_dir_all(&parent);
 }
+
+fn web_url(plan: PlayPlan) -> String {
+    let PlayPlan::Web { url } = plan else {
+        panic!("expected a web plan");
+    };
+    url
+}
+
+fn sibling_of_page(page: &str, name: &str) -> String {
+    let (directory, _) = page.rsplit_once('/').expect("page url");
+    format!("{directory}/{name}")
+}
+
+#[test]
+fn web_plan_url_loads_sibling_script_and_image() {
+    let root = scratch_dir();
+    let project = root.join("synthetic-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"index.html","title":"Synthetic Web"}"#,
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><script src=\"neighbor.js\"></script><img src=\"neighbor.png\" alt=\"\">",
+    );
+    write_file(&project.join("neighbor.js"), "/* synthetic */");
+    write_file(&project.join("neighbor.png"), "synthetic image");
+
+    let url = web_url(planned(&root).expect("web plan"));
+    assert_eq!(
+        url,
+        format!("file://{}", project.join("index.html").display())
+    );
+    for name in ["neighbor.js", "neighbor.png"] {
+        let sibling = sibling_of_page(&url, name);
+        assert_eq!(sibling, format!("file://{}", project.join(name).display()));
+        assert!(
+            Path::new(sibling.trim_start_matches("file://")).is_file(),
+            "{name} is not loadable from {url}"
+        );
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_plan_uses_the_page_project_json_names() {
+    let root = scratch_dir();
+    let project = root.join("named-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"page.html","title":"Named Page"}"#,
+    );
+    write_file(
+        &project.join("page.html"),
+        "<!doctype html><title>Named</title>",
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><title>Other</title>",
+    );
+
+    let url = web_url(planned(&root).expect("named page"));
+    assert_eq!(
+        url,
+        format!("file://{}", project.join("page.html").display())
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn missing_named_page_does_not_substitute_index_html() {
+    let root = scratch_dir();
+    let project = root.join("missing-named");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"page.html","title":"Missing Named"}"#,
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><title>Other</title>",
+    );
+
+    let error = planned(&root).expect_err("missing named page");
+    match error {
+        PlayError::MissingFile { path } => assert_eq!(path, project.join("page.html")),
+        other => panic!("substituted another page: {other}"),
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_plan_keeps_an_http_url_instead_of_a_local_page() {
+    let root = scratch_dir();
+    let project = root.join("url-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"https://example.com/wall","title":"Remote Web"}"#,
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><title>Local</title>",
+    );
+
+    assert_eq!(
+        planned(&root).expect("remote web"),
+        PlayPlan::Web {
+            url: "https://example.com/wall".into(),
+        }
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_plan_keeps_an_http_scheme_without_a_local_file() {
+    let root = scratch_dir();
+    let project = root.join("url-only");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"HTTP://example.com/page","title":"Remote Only"}"#,
+    );
+
+    assert_eq!(
+        planned(&root).expect("url only"),
+        PlayPlan::Web {
+            url: "HTTP://example.com/page".into(),
+        }
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_directory_file_uses_index_html_and_its_siblings() {
+    let root = scratch_dir();
+    let project = root.join("dir-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"site","title":"Directory Web"}"#,
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><title>Wrong page</title>",
+    );
+    write_file(
+        &project.join("site/index.html"),
+        "<!doctype html><script src=\"neighbor.js\"></script><img src=\"neighbor.png\" alt=\"\">",
+    );
+    write_file(&project.join("site/neighbor.js"), "/* synthetic */");
+    write_file(&project.join("site/neighbor.png"), "synthetic image");
+
+    let url = web_url(planned(&root).expect("directory web"));
+    let index = project.join("site/index.html");
+    assert_eq!(url, format!("file://{}", index.display()));
+    assert_ne!(
+        url,
+        format!("file://{}", project.join("index.html").display())
+    );
+    for name in ["neighbor.js", "neighbor.png"] {
+        let sibling = sibling_of_page(&url, name);
+        assert_eq!(
+            sibling,
+            format!("file://{}", project.join("site").join(name).display())
+        );
+        assert!(Path::new(sibling.trim_start_matches("file://")).is_file());
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_dot_directory_uses_the_project_index_html() {
+    let root = scratch_dir();
+    let project = root.join("dot-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":".","title":"Dot Directory"}"#,
+    );
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><script src=\"neighbor.js\"></script>",
+    );
+    write_file(&project.join("neighbor.js"), "/* synthetic */");
+
+    let url = web_url(planned(&root).expect("dot directory"));
+    assert_eq!(
+        url,
+        format!("file://{}", project.join("index.html").display())
+    );
+    assert!(
+        Path::new(sibling_of_page(&url, "neighbor.js").trim_start_matches("file://")).is_file()
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_directory_without_index_html_errors() {
+    let root = scratch_dir();
+    let project = root.join("empty-dir-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"site","title":"Empty Directory"}"#,
+    );
+    fs::create_dir(project.join("site")).expect("site dir");
+    write_file(
+        &project.join("index.html"),
+        "<!doctype html><title>Root</title>",
+    );
+
+    let error = planned(&root).expect_err("directory without index");
+    match error {
+        PlayError::MissingFile { path } => assert_eq!(path, project.join("site/index.html")),
+        other => panic!("unexpected error: {other}"),
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn web_backslash_path_resolves_the_named_page() {
+    let root = scratch_dir();
+    let project = root.join("slash-web");
+    write_project(
+        &project,
+        r#"{"type":"web","file":"nested\\index.html","title":"Backslash"}"#,
+    );
+    write_file(
+        &project.join("nested/index.html"),
+        "<!doctype html><script src=\"neighbor.js\"></script>",
+    );
+    write_file(&project.join("nested/neighbor.js"), "/* synthetic */");
+
+    let url = web_url(planned(&root).expect("backslash path"));
+    assert_eq!(
+        url,
+        format!("file://{}", project.join("nested/index.html").display())
+    );
+    assert!(
+        Path::new(sibling_of_page(&url, "neighbor.js").trim_start_matches("file://")).is_file()
+    );
+    let _ = fs::remove_dir_all(&root);
+}

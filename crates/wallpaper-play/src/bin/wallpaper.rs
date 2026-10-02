@@ -46,7 +46,7 @@ and does not start mpv or xdg-open.
 PATH with mpv arguments: an infinite file loop and the media path. It does
 not change web or scene playback. The default program for that override is mpv.
 --web-player PATH skips the Plasma wallpaper for a web item and runs PATH
-with the file URL only. It does not change scene playback. The default
+with the page URL only. It does not change scene playback. The default
 program for that override is xdg-open.
 ui binds to 127.0.0.1, prints the page URL, and serves the workshop library.
 The page plays a video or web item the same way play does. A scene item is
