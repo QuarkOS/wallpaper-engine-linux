@@ -41,13 +41,13 @@ Build an RPM from this repository, then install it. The package provides `wallpa
 ```sh
 sudo dnf install rpm-build rust cargo gcc pkgconf-pkg-config gtk3-devel webkit2gtk4.1-devel curl ca-certificates
 mkdir -p "$HOME/rpmbuild/SOURCES"
-tar -czf "$HOME/rpmbuild/SOURCES/wallpaper-engine-linux-0.2.0.tar.gz" \
+tar -czf "$HOME/rpmbuild/SOURCES/wallpaper-engine-linux-0.2.1.tar.gz" \
   --exclude target \
   --exclude .git \
-  --transform 's,^,wallpaper-engine-linux-0.2.0/,' \
+  --transform 's,^,wallpaper-engine-linux-0.2.1/,' \
   .gitignore Cargo.lock Cargo.toml README.md rust-toolchain.toml crates packaging ui
 rpmbuild -bb packaging/fedora/wallpaper-engine-linux.spec
-sudo dnf install "$HOME/rpmbuild/RPMS/$(uname -m)/wallpaper-engine-linux-0.2.0-1"*.rpm
+sudo dnf install "$HOME/rpmbuild/RPMS/$(uname -m)/wallpaper-engine-linux-0.2.1-1"*.rpm
 ```
 
 If Fedora's `cargo` is older than Rust 1.98.1, the spec installs that toolchain with rustup while it builds.

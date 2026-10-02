@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           wallpaper-engine-linux
-Version:        0.2.0
+Version:        0.2.1
 Release:        1%{?dist}
 Summary:        Play owned Wallpaper Engine items as KDE Plasma wallpapers
 License:        MIT
@@ -69,6 +69,8 @@ install -D -m 0644 packaging/fedora/wallpaper-engine-linux.desktop %{buildroot}%
 %{_datadir}/applications/wallpaper-engine-linux.desktop
 
 %changelog
+* Fri Oct 02 2026 Wallpaper Engine Linux <wallpaper-engine-linux@localhost> - 0.2.1-1
+- Report version 0.2.1 so the desktop updater can see the web wallpaper fix.
 * Wed Sep 30 2026 Wallpaper Engine Linux <wallpaper-engine-linux@localhost> - 0.2.0-1
 - Report version 0.2.0 so the desktop updater can see this release.
 * Tue Sep 29 2026 Wallpaper Engine Linux <wallpaper-engine-linux@localhost> - 0.1.0-1
